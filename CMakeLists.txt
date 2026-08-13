@@ -194,6 +194,12 @@ else(MBEDTLS_FOUND)
   message(FATAL_ERROR "mbedTLS is required to build srsRAN")
 endif (MBEDTLS_FOUND)
 
+# SCTP (kernel SCTP on Linux; libusrsctp userland fallback on macOS).
+# Found here at top level so SCTP_INCLUDE_DIRS/SCTP_LIBRARIES are available to
+# every target that links srsran_common.
+find_package(SCTP REQUIRED)
+include_directories(${SCTP_INCLUDE_DIRS})
+
 # Hard-SIM support
 if(ENABLE_HARDSIM)
   find_package(PCSCLite)
@@ -654,6 +660,11 @@ add_custom_target(add_srsran_headers SOURCES ${HEADERS_ALL})
 ########################################################################
 # Add the subdirectories
 ########################################################################
+# AppleClang treats some newer diagnostics as errors by default; relax the ones
+# that fire on srsRAN's (valid, older-style) template code on macOS.
+if(APPLE)
+  add_compile_options(-Wno-missing-template-arg-list-after-template-kw)
+endif()
 add_subdirectory(lib)
 
 if(RF_FOUND)
