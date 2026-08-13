@@ -30,7 +30,7 @@
 #include "srsran/support/srsran_assert.h"
 
 #include <errno.h>
-#include <linux/ip.h>
+#include "srsran/common/ip_compat.h"
 #include <sys/socket.h>
 #include <unistd.h>
 

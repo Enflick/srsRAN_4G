@@ -21,7 +21,7 @@
 
 #include "srsran/common/pcap.h"
 #include <arpa/inet.h>
-#include <linux/udp.h>
+#include "srsran/common/ip_compat.h"
 #include <stdio.h>
 #include <string.h>
 #include <sys/time.h>
