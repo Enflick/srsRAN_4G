@@ -21,6 +21,7 @@
 
 #include <inttypes.h>
 #include <stdlib.h>
+#include "srsran/common/endian_compat.h"
 #include <string.h>
 #include <strings.h>
 
