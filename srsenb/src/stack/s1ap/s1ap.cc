@@ -27,10 +27,10 @@
 #include "srsran/common/standard_streams.h"
 #include "srsran/interfaces/enb_rrc_interface_s1ap.h"
 
+#include "srsran/common/sctp_compat.h"
 #include <arpa/inet.h> //for inet_ntop()
 #include <inttypes.h>
 #include <netinet/in.h>
-#include <netinet/sctp.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>

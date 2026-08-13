@@ -32,6 +32,7 @@ set(SOURCES arch_select.cc
             mac_pcap_base.cc
             nas_pcap.cc
             network_utils.cc
+            sctp_compat.cc
             timerfd_compat.c
             mac_pcap_net.cc
             pcap.c

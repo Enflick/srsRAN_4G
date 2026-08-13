@@ -21,7 +21,7 @@
 
 #include "srsran/common/network_utils.h"
 
-#include <netinet/sctp.h>
+#include "srsran/common/sctp_compat.h"
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h> // for the pipe
@@ -91,7 +91,7 @@ net_utils::socket_type get_addr_family(int fd)
   }
   int       type;
   socklen_t length = sizeof(int);
-  getsockopt(fd, SOL_SOCKET, SO_TYPE, &type, &length);
+  srsran_sctp_getsockopt(fd, SOL_SOCKET, SO_TYPE, &type, &length);
   return (net_utils::socket_type)type;
 }
 
@@ -112,7 +112,9 @@ const char* protocol_to_string(protocol_type p)
 
 int open_socket(net_utils::addr_family ip_type, net_utils::socket_type socket_type, net_utils::protocol_type protocol)
 {
-  int fd = socket((int)ip_type, (int)socket_type, (int)protocol);
+  int fd = (protocol == net_utils::protocol_type::SCTP)
+               ? srsran_sctp_socket((int)ip_type, (int)socket_type, (int)protocol)
+               : socket((int)ip_type, (int)socket_type, (int)protocol);
   if (fd == -1) {
     srslog::fetch_basic_logger(LOGSERVICE).error("Failed to open %s socket.", net_utils::protocol_to_string(protocol));
     perror("Could not create socket\n");
@@ -130,7 +132,7 @@ bool bind_addr(int fd, const sockaddr_in& addr_in)
     return false;
   }
 
-  if (bind(fd, (struct sockaddr*)&addr_in, sizeof(addr_in)) != 0) {
+  if (srsran_sctp_bind(fd, (struct sockaddr*)&addr_in, sizeof(addr_in)) != 0) {
     srslog::fetch_basic_logger(LOGSERVICE)
         .error("Failed to bind on address %s:%d. Socket=%d, strerror=%s, errno=%d",
                get_ip(addr_in).c_str(),
@@ -180,7 +182,7 @@ bool connect_to(int fd, const char* dest_addr_str, int dest_port, sockaddr_in* d
   if (dest_sockaddr != nullptr) {
     *dest_sockaddr = sockaddr_tmp;
   }
-  if (connect(fd, (const struct sockaddr*)&sockaddr_tmp, sizeof(sockaddr_tmp)) == -1) {
+  if (srsran_sctp_connect(fd, (const struct sockaddr*)&sockaddr_tmp, sizeof(sockaddr_tmp)) == -1) {
     srslog::fetch_basic_logger(LOGSERVICE).info("Failed to establish socket connection to %s", dest_addr_str);
     perror("connect()");
     return false;
@@ -196,7 +198,7 @@ bool start_listen(int fd)
   }
 
   // Listen for connections
-  if (listen(fd, SOMAXCONN) != 0) {
+  if (srsran_sctp_listen(fd, SOMAXCONN) != 0) {
     srslog::fetch_basic_logger(LOGSERVICE).error("Failed to listen to incoming SCTP connections");
     perror("listen()");
     return false;
@@ -212,7 +214,7 @@ bool reuse_addr(int fd)
   }
 
   int enable = 1;
-  if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(int)) < 0) {
+  if (srsran_sctp_setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(int)) < 0) {
     srslog::fetch_basic_logger(LOGSERVICE).error("Failed to set SO_REUSEADDR. Socket=%d", fd);
     return false;
   }
@@ -234,10 +236,10 @@ bool sctp_subscribe_to_events(int fd)
   evnts.sctp_data_io_event          = 1;
   evnts.sctp_shutdown_event         = 1;
   evnts.sctp_address_event          = 1;
-  if (setsockopt(fd, IPPROTO_SCTP, SCTP_EVENTS, &evnts, sizeof(evnts)) != 0) {
+  if (srsran_sctp_setsockopt(fd, IPPROTO_SCTP, SCTP_EVENTS, &evnts, sizeof(evnts)) != 0) {
     srslog::fetch_basic_logger(LOGSERVICE).error("Failed to subscribe to SCTP_SHUTDOWN event: %s", strerror(errno));
     perror("Could not register socket to SCTP events\n");
-    close(fd);
+    srsran_sctp_close(fd);
     return false;
   }
   return true;
@@ -253,9 +255,9 @@ bool sctp_set_rto_opts(int fd, int rto_max)
   sctp_rtoinfo rto_opts;
   socklen_t    rto_sz    = sizeof(sctp_rtoinfo);
   rto_opts.srto_assoc_id = 0;
-  if (getsockopt(fd, SOL_SCTP, SCTP_RTOINFO, &rto_opts, &rto_sz) < 0) {
+  if (srsran_sctp_getsockopt(fd, SOL_SCTP, SCTP_RTOINFO, &rto_opts, &rto_sz) < 0) {
     printf("Error getting RTO_INFO sockopts\n");
-    close(fd);
+    srsran_sctp_close(fd);
     return false;
   }
 
@@ -268,9 +270,9 @@ bool sctp_set_rto_opts(int fd, int rto_max)
              rto_opts.srto_min,
              rto_opts.srto_max);
 
-  if (setsockopt(fd, SOL_SCTP, SCTP_RTOINFO, &rto_opts, rto_sz) < 0) {
+  if (srsran_sctp_setsockopt(fd, SOL_SCTP, SCTP_RTOINFO, &rto_opts, rto_sz) < 0) {
     perror("Error setting RTO_INFO sockopts\n");
-    close(fd);
+    srsran_sctp_close(fd);
     return false;
   }
   return true;
@@ -285,9 +287,9 @@ bool sctp_set_init_msg_opts(int fd, int init_max_attempts, int max_init_timeo)
   // Set SCTP INITMSG options to reduce blocking timeout of connect()
   sctp_initmsg init_opts;
   socklen_t    init_sz = sizeof(sctp_initmsg);
-  if (getsockopt(fd, SOL_SCTP, SCTP_INITMSG, &init_opts, &init_sz) < 0) {
+  if (srsran_sctp_getsockopt(fd, SOL_SCTP, SCTP_INITMSG, &init_opts, &init_sz) < 0) {
     printf("Error getting sockopts\n");
-    close(fd);
+    srsran_sctp_close(fd);
     return false;
   }
 
@@ -298,9 +300,9 @@ bool sctp_set_init_msg_opts(int fd, int init_max_attempts, int max_init_timeo)
       .debug("Setting SCTP_INITMSG options on SCTP socket. Max attempts %d, Max init attempts timeout %d",
              init_opts.sinit_max_attempts,
              init_opts.sinit_max_init_timeo);
-  if (setsockopt(fd, SOL_SCTP, SCTP_INITMSG, &init_opts, init_sz) < 0) {
+  if (srsran_sctp_setsockopt(fd, SOL_SCTP, SCTP_INITMSG, &init_opts, init_sz) < 0) {
     perror("Error setting SCTP_INITMSG sockopts\n");
-    close(fd);
+    srsran_sctp_close(fd);
     return false;
   }
   return true;
@@ -344,7 +346,7 @@ bool unique_socket::open_socket(net_utils::addr_family   ip_type,
 void unique_socket::close()
 {
   if (sockfd >= 0) {
-    if (::close(sockfd) == -1) {
+    if (srsran_sctp_close(sockfd) == -1) {
       srslog::fetch_basic_logger(LOGSERVICE).error("Socket=%d could not be closed.", sockfd);
     } else {
       srslog::fetch_basic_logger(LOGSERVICE).debug("Socket=%d was closed.", sockfd);

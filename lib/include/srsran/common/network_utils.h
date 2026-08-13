@@ -26,11 +26,11 @@
 #include "srsran/common/multiqueue.h"
 #include "srsran/common/threads.h"
 
+#include "srsran/common/sctp_compat.h"
 #include <arpa/inet.h>
 #include <map>
 #include <mutex>
 #include <netinet/in.h>
-#include <netinet/sctp.h>
 #include <netinet/tcp.h>
 #include <netinet/udp.h>
 #include <sys/socket.h>
