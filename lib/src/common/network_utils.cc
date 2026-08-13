@@ -307,6 +307,70 @@ bool sctp_set_init_msg_opts(int fd, int init_max_attempts, int max_init_timeo)
   }
   return true;
 }
+
+/*
+ * Pin path MTU and/or relax the failure detection of an established association.
+ * All of it is off by default; see net_utils::sctp_path_opts.
+ */
+bool sctp_set_path_opts(int fd, const sockaddr_in& peer_addr, const sctp_path_opts& opts)
+{
+  auto& logger = srslog::fetch_basic_logger(LOGSERVICE);
+
+  if (opts.path_mtu != 0 or opts.disable_hb or opts.path_max_retrans >= 0) {
+    sctp_paddrparams pp = {};
+    memcpy(&pp.spp_address, &peer_addr, sizeof(peer_addr));
+    if (opts.disable_hb) {
+      pp.spp_flags |= SPP_HB_DISABLE;
+    }
+    if (opts.path_mtu != 0) {
+      pp.spp_flags |= SPP_PMTUD_DISABLE;
+      pp.spp_pathmtu = opts.path_mtu;
+    }
+    if (opts.path_max_retrans >= 0) {
+      pp.spp_pathmaxrxt = opts.path_max_retrans;
+    }
+    if (srsran_sctp_setsockopt(fd, IPPROTO_SCTP, SCTP_PEER_ADDR_PARAMS, &pp, sizeof(pp)) != 0) {
+      logger.error("Failed to set SCTP_PEER_ADDR_PARAMS on Socket=%d: %s", fd, strerror(errno));
+      return false;
+    }
+    logger.info("Set SCTP path options on Socket=%d. Path MTU %u, heartbeats %s, path max retrans %d",
+                fd,
+                opts.path_mtu,
+                opts.disable_hb ? "disabled" : "enabled",
+                opts.path_max_retrans);
+  }
+
+  // A pinned path MTU is only honoured for fragmentation once the maximum
+  // fragment size follows it. Leave room for the IP, SCTP common and DATA chunk
+  // headers.
+  const uint32_t max_hdr_overhead = 80;
+  if (opts.path_mtu > max_hdr_overhead) {
+    sctp_assoc_value av = {};
+    av.assoc_value      = opts.path_mtu - max_hdr_overhead;
+    if (srsran_sctp_setsockopt(fd, IPPROTO_SCTP, SCTP_MAXSEG, &av, sizeof(av)) != 0) {
+      logger.error("Failed to set SCTP_MAXSEG on Socket=%d: %s", fd, strerror(errno));
+      return false;
+    }
+    logger.info("Set SCTP maximum fragment size to %u on Socket=%d", av.assoc_value, fd);
+  }
+
+  if (opts.assoc_max_retrans >= 0) {
+    sctp_assocparams ap    = {};
+    socklen_t        ap_sz = sizeof(ap);
+    if (srsran_sctp_getsockopt(fd, IPPROTO_SCTP, SCTP_ASSOCINFO, &ap, &ap_sz) != 0) {
+      logger.error("Failed to get SCTP_ASSOCINFO on Socket=%d: %s", fd, strerror(errno));
+      return false;
+    }
+    ap.sasoc_asocmaxrxt = opts.assoc_max_retrans;
+    if (srsran_sctp_setsockopt(fd, IPPROTO_SCTP, SCTP_ASSOCINFO, &ap, ap_sz) != 0) {
+      logger.error("Failed to set SCTP_ASSOCINFO on Socket=%d: %s", fd, strerror(errno));
+      return false;
+    }
+    logger.info("Set SCTP association max retrans to %d on Socket=%d", opts.assoc_max_retrans, fd);
+  }
+
+  return true;
+}
 } // namespace net_utils
 
 /********************************************
@@ -391,6 +455,11 @@ bool unique_socket::sctp_set_rto_opts(int rto_max)
 bool unique_socket::sctp_set_init_msg_opts(int max_init_attempts, int max_init_timeo)
 {
   return net_utils::sctp_set_init_msg_opts(sockfd, max_init_attempts, max_init_timeo);
+}
+
+bool unique_socket::sctp_set_path_opts(const sockaddr_in& peer_addr, const net_utils::sctp_path_opts& opts)
+{
+  return net_utils::sctp_set_path_opts(sockfd, peer_addr, opts);
 }
 
 /***************************************************************

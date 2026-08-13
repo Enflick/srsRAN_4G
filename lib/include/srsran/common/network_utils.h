@@ -60,6 +60,22 @@ bool bind_addr(int fd, const sockaddr_in& addr_in);
 bool bind_addr(int fd, const char* bind_addr_str, int port, sockaddr_in* addr_result = nullptr);
 bool connect_to(int fd, const char* dest_addr_str, int dest_port, sockaddr_in* dest_sockaddr = nullptr);
 
+/// Per-path/association SCTP tuning, applied to an established association.
+struct sctp_path_opts {
+  /// Pin the path MTU to this value and disable path MTU discovery. 0 leaves
+  /// discovery enabled, which is what the stack does by default.
+  uint32_t path_mtu = 0;
+  /// Stop emitting SCTP HEARTBEATs on the path. Liveness then relies on data
+  /// retransmission and on answering the peer's own HEARTBEATs.
+  bool disable_hb = false;
+  /// Retransmissions before a path is declared unreachable. <0 keeps the
+  /// stack default.
+  int32_t path_max_retrans = -1;
+  /// Retransmissions before the association aborts itself. <0 keeps the
+  /// stack default.
+  int32_t assoc_max_retrans = -1;
+};
+
 } // namespace net_utils
 
 /**
@@ -91,6 +107,7 @@ public:
   bool sctp_subscribe_to_events();
   bool sctp_set_rto_opts(int rto_max);
   bool sctp_set_init_msg_opts(int max_init_attempts, int max_init_timeo);
+  bool sctp_set_path_opts(const sockaddr_in& peer_addr, const net_utils::sctp_path_opts& opts);
   int  get_socket() const { return sockfd; };
 
 protected:

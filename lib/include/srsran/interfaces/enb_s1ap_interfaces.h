@@ -47,6 +47,12 @@ struct s1ap_args_t {
   int32_t     sctp_rto_max;
   int32_t     sctp_init_max_attempts;
   int32_t     sctp_max_init_timeo;
+  uint32_t    sctp_path_mtu;
+  bool        sctp_hb_disable;
+  int32_t     sctp_path_max_retrans;
+  int32_t     sctp_assoc_max_retrans;
+  bool        sctp_ignore_addr_unreachable;
+  bool        send_ue_cap_info_ind;
 };
 
 // S1AP interface for RRC

@@ -562,6 +562,17 @@ bool s1ap::connect_mme()
   }
   logger.info("SCTP socket connected with MME. fd=%d", mme_socket.fd());
 
+  // Set per-path options on the established association
+  srsran::net_utils::sctp_path_opts path_opts = {};
+  path_opts.path_mtu                          = args.sctp_path_mtu;
+  path_opts.disable_hb                        = args.sctp_hb_disable;
+  path_opts.path_max_retrans                  = args.sctp_path_max_retrans;
+  path_opts.assoc_max_retrans                 = args.sctp_assoc_max_retrans;
+  if (not mme_socket.sctp_set_path_opts(mme_addr, path_opts)) {
+    mme_socket.close();
+    return false;
+  }
+
   // Assign a handler to rx MME packets
   auto rx_callback =
       [this](srsran::unique_byte_buffer_t pdu, const sockaddr_in& from, const sctp_sndrcvinfo& sri, int flags) {
@@ -634,7 +645,15 @@ bool s1ap::handle_mme_rx_msg(srsran::unique_byte_buffer_t pdu,
                notification->sn_paddr_change.spc_state == SCTP_ADDR_UNREACHABLE) {
       logger.info("SCTP peer addres unreachable. Association: %d", sri.sinfo_assoc_id);
       srsran::console("SCTP peer address unreachable. Association: %d\n", sri.sinfo_assoc_id);
-      restart_s1 = true;
+      // With a single MME path, an unreachable path means a dead association, so
+      // by default this tears S1 down. It can be ignored for deployments where
+      // the path monitoring produces false positives - a tunnel that drops
+      // HEARTBEATs, say - leaving COMM_LOST and SCTP_SHUTDOWN_EVENT to detect
+      // genuine failures.
+      restart_s1 = not args.sctp_ignore_addr_unreachable;
+      if (not restart_s1) {
+        logger.info("Ignoring unreachable SCTP peer address (sctp_ignore_addr_unreachable)");
+      }
     } else if (notification->sn_header.sn_type == SCTP_REMOTE_ERROR) {
       logger.info("SCTP remote error. Association: %d", sri.sinfo_assoc_id);
       srsran::console("SCTP remote error. Association: %d\n", sri.sinfo_assoc_id);
@@ -1411,6 +1430,10 @@ bool s1ap::release_erabs(uint16_t rnti, const std::vector<uint16_t>& erabs_succe
 
 bool s1ap::send_ue_cap_info_indication(uint16_t rnti, srsran::unique_byte_buffer_t ue_radio_cap)
 {
+  if (not args.send_ue_cap_info_ind) {
+    logger.info("Not sending UECapabilityInfoIndication for rnti=0x%x (send_ue_cap_info_ind disabled)", rnti);
+    return true;
+  }
   ue* user_ptr = users.find_ue_rnti(rnti);
   if (user_ptr == nullptr) {
     return false;

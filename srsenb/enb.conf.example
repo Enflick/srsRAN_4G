@@ -426,6 +426,27 @@ enable = false
 # rx_gain_offset:       RX Gain offset to add to rx_gain to calibrate RSRP readings
 # use_cedron_f_est_alg: Whether to use Cedron algorithm for TA estimation or not (Default: false)
 #
+# sctp_path_mtu:        Pin the S1-C path MTU (bytes) and disable SCTP path MTU discovery.
+#                       Useful when the S1-C path crosses a tunnel that drops oversized
+#                       packets without returning ICMP, in which case discovery never
+#                       learns the real MTU and large S1AP messages are blackholed.
+#                       (Default: 0, discovery enabled)
+# sctp_hb_disable:      Stop sending SCTP HEARTBEATs on the S1-C path. Liveness then relies
+#                       on data retransmission and on answering the MME's own HEARTBEATs.
+#                       (Default: false)
+# sctp_path_max_retrans: Retransmissions before the S1-C path is declared unreachable.
+#                       (Default: -1, stack default)
+# sctp_assoc_max_retrans: Retransmissions before the S1-C association aborts itself.
+#                       (Default: -1, stack default)
+# sctp_ignore_addr_unreachable: Do not restart S1 when SCTP reports the MME address
+#                       unreachable. For paths whose failure detection false-positives;
+#                       COMM_LOST and SCTP_SHUTDOWN still tear S1 down. (Default: false)
+# send_ue_cap_info_ind: Upload the UE Radio Capability to the MME in a
+#                       UECapabilityInfoIndication. Disabling it keeps the MME from
+#                       echoing the stored capability back in every subsequent
+#                       InitialContextSetupRequest, at the cost of re-running the RRC
+#                       UECapabilityEnquiry on each attach. (Default: true)
+#
 # rt_sched_enable:      Request a real-time scheduling reservation for the PHY and radio
 #                       threads. macOS only - there, a real-time scheduling class alone
 #                       carries no guarantee and the Mach time-constraint policy is what
@@ -481,3 +502,9 @@ enable = false
 #rt_sched_period_us      = 1000
 #rt_sched_computation_us = 250
 #rt_sched_constraint_us  = 1000
+#sctp_path_mtu = 0
+#sctp_hb_disable = false
+#sctp_path_max_retrans = -1
+#sctp_assoc_max_retrans = -1
+#sctp_ignore_addr_unreachable = false
+#send_ue_cap_info_ind = true
