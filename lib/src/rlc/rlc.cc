@@ -255,6 +255,11 @@ bool rlc::has_data_locked(const uint32_t lcid)
 void rlc::get_buffer_state(uint32_t lcid, uint32_t& tx_queue, uint32_t& prio_tx_queue)
 {
   rwlock_read_guard lock(rwlock);
+  get_buffer_state_nolock(lcid, tx_queue, prio_tx_queue);
+}
+
+void rlc::get_buffer_state_nolock(uint32_t lcid, uint32_t& tx_queue, uint32_t& prio_tx_queue)
+{
   if (valid_lcid(lcid)) {
     if (rlc_array.at(lcid)->is_suspended()) {
       tx_queue      = 0;
@@ -291,7 +296,7 @@ uint32_t rlc::read_pdu(uint32_t lcid, uint8_t* payload, uint32_t nof_bytes)
   rwlock_read_guard lock(rwlock);
   if (valid_lcid(lcid)) {
     ret = rlc_array.at(lcid)->read_pdu(payload, nof_bytes);
-    update_bsr(lcid);
+    update_bsr_nolock(lcid); // already holding rwlock; avoid recursive read-lock (macOS deadlock)
   } else {
     logger.warning("LCID %d doesn't exist.", lcid);
   }
@@ -615,6 +620,17 @@ void rlc::update_bsr(uint32_t lcid)
   if (bsr_callback) {
     uint32_t tx_queue = 0, prio_tx_queue = 0;
     get_buffer_state(lcid, tx_queue, prio_tx_queue);
+  }
+}
+
+// Variant for callers that already hold rwlock (e.g. read_pdu). Re-locking the
+// rwlock here would be a recursive read-lock, which deadlocks on macOS whenever
+// a writer (e.g. rlc::add_bearer from the RRC) is queued.
+void rlc::update_bsr_nolock(uint32_t lcid)
+{
+  if (bsr_callback) {
+    uint32_t tx_queue = 0, prio_tx_queue = 0;
+    get_buffer_state_nolock(lcid, tx_queue, prio_tx_queue);
   }
 }
 

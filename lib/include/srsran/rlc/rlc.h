@@ -98,6 +98,9 @@ private:
   void reset_metrics();
 
   void get_buffer_state(uint32_t lcid, uint32_t& tx_queue, uint32_t& prio_tx_queue);
+  // Same as above but assumes the caller already holds rwlock (avoids a recursive
+  // read-lock, which deadlocks on macOS when a writer is queued).
+  void get_buffer_state_nolock(uint32_t lcid, uint32_t& tx_queue, uint32_t& prio_tx_queue);
 
   srslog::basic_logger&      logger;
   byte_buffer_pool*          pool   = nullptr;
@@ -121,6 +124,8 @@ private:
   bool valid_lcid_mrb(uint32_t lcid);
 
   void update_bsr(uint32_t lcid);
+  // Same as update_bsr but assumes the caller already holds rwlock.
+  void update_bsr_nolock(uint32_t lcid);
   void update_bsr_mch(uint32_t lcid);
 };
 
