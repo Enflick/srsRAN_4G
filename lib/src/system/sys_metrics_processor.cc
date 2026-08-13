@@ -22,7 +22,9 @@
 #include "srsran/system/sys_metrics_processor.h"
 #include <fstream>
 #include <sstream>
+#ifndef __APPLE__
 #include <sys/sysinfo.h>
+#endif
 #include <unistd.h>
 
 using namespace srsran;

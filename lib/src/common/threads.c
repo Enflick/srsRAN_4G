@@ -53,7 +53,9 @@ bool threads_new_rt_cpu(pthread_t* thread, void* (*start_routine)(void*), void* 
 
   pthread_attr_t     attr;
   struct sched_param param;
+#ifndef __APPLE__
   cpu_set_t          cpuset;
+#endif
   bool               attr_enable = false;
 
 #ifdef PER_THREAD_PRIO
@@ -126,6 +128,8 @@ bool threads_new_rt_cpu(pthread_t* thread, void* (*start_routine)(void*), void* 
       fprintf(stderr, "Error not enough privileges to set Scheduling priority\n");
     }
   }
+#ifndef __APPLE__
+  // macOS has no CPU-affinity API; thread pinning is skipped there.
   if (cpu > 0) {
     if (cpu > 50) {
       uint32_t mask;
@@ -146,6 +150,9 @@ bool threads_new_rt_cpu(pthread_t* thread, void* (*start_routine)(void*), void* 
       perror("pthread_attr_setaffinity_np");
     }
   }
+#else
+  (void)cpu;
+#endif
 
 // TSAN seems to have issues with thread attributes when running as normal user, disable them in that case
 #if HAVE_TSAN
@@ -170,6 +177,7 @@ bool threads_new_rt_cpu(pthread_t* thread, void* (*start_routine)(void*), void* 
   } else {
     ret = true;
   }
+
   if (attr_enable) {
     pthread_attr_destroy(&attr);
   }
@@ -179,14 +187,16 @@ bool threads_new_rt_cpu(pthread_t* thread, void* (*start_routine)(void*), void* 
 void threads_print_self()
 {
   pthread_t          thread;
-  cpu_set_t          cpuset;
   struct sched_param param;
   int                policy;
   const char*        p;
-  int                s, j;
+  int                s;
 
   thread = pthread_self();
 
+#ifndef __APPLE__
+  cpu_set_t cpuset;
+  int       j;
   s = pthread_getaffinity_np(thread, sizeof(cpu_set_t), &cpuset);
   if (s != 0) {
     printf("error pthread_getaffinity_np: %s\n", strerror(s));
@@ -198,6 +208,7 @@ void threads_print_self()
       printf("    CPU %d\n", j);
     }
   }
+#endif
 
   s = pthread_getschedparam(thread, &policy, &param);
   if (s != 0) {

@@ -88,7 +88,12 @@ public:
   void set_name(const std::string& name_)
   {
     name = name_;
+#ifdef __APPLE__
+    // macOS can only name the calling thread; effective when called from within it.
+    pthread_setname_np(name.c_str());
+#else
     pthread_setname_np(pthread_self(), name.c_str());
+#endif
   }
 
   void wait_thread_finish() { pthread_join(_thread, NULL); }
@@ -112,7 +117,11 @@ protected:
 private:
   static void* thread_function_entry(void* _this)
   {
+#ifdef __APPLE__
+    pthread_setname_np(((thread*)_this)->name.c_str());
+#else
     pthread_setname_np(pthread_self(), ((thread*)_this)->name.c_str());
+#endif
     ((thread*)_this)->run_thread();
     return NULL;
   }
