@@ -112,6 +112,10 @@ struct general_args_t {
   uint32_t    max_mac_ul_kos;
   uint32_t    gtpu_indirect_tunnel_timeout;
   uint32_t    rlf_release_timer_ms;
+  bool        rt_sched_enable;
+  uint32_t    rt_sched_period_us;
+  uint32_t    rt_sched_computation_us;
+  uint32_t    rt_sched_constraint_us;
 };
 
 struct all_args_t {

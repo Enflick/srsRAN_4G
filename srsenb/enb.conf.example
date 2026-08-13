@@ -425,6 +425,19 @@ enable = false
 # s1_connect_timer:     Connection Retry Timer for S1 connection (seconds)
 # rx_gain_offset:       RX Gain offset to add to rx_gain to calibrate RSRP readings
 # use_cedron_f_est_alg: Whether to use Cedron algorithm for TA estimation or not (Default: false)
+#
+# rt_sched_enable:      Request a real-time scheduling reservation for the PHY and radio
+#                       threads. macOS only - there, a real-time scheduling class alone
+#                       carries no guarantee and the Mach time-constraint policy is what
+#                       actually keeps thread wakeups inside the subframe deadline.
+#                       Ignored on other platforms. (Default: true)
+# rt_sched_period_us:   Reservation period in us. (Default: 1000, one LTE subframe)
+# rt_sched_computation_us: CPU time in us reserved per period for each real-time thread.
+#                       The sum over all real-time threads must stay below one period or
+#                       the scheduler refuses the reservation, so lower this if
+#                       nof_phy_threads is high. (Default: 250)
+# rt_sched_constraint_us: Deadline in us within which the reserved computation must be
+#                       scheduled. (Default: 1000)
 #####################################################################
 [expert]
 #pusch_max_its        = 8 # These are half iterations
@@ -464,3 +477,7 @@ enable = false
 #rx_gain_offset = 62
 #mac_prach_bi         = 0
 #use_cedron_f_est_alg = false
+#rt_sched_enable         = true
+#rt_sched_period_us      = 1000
+#rt_sched_computation_us = 250
+#rt_sched_constraint_us  = 1000

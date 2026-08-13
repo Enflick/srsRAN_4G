@@ -28,6 +28,66 @@
 
 #include "srsran/common/threads.h"
 
+// Real-time scheduling deadline, see srsran_rt_sched_args_t. Defaults describe
+// the 1ms LTE subframe cadence.
+static srsran_rt_sched_args_t rt_sched_args = {
+    .enable         = true,
+    .period_us      = 1000,
+    .computation_us = 250,
+    .constraint_us  = 1000,
+};
+
+void srsran_rt_sched_set_args(srsran_rt_sched_args_t args)
+{
+  rt_sched_args = args;
+}
+
+#ifdef __APPLE__
+#include <mach/mach.h>
+#include <mach/mach_time.h>
+#include <mach/thread_act.h>
+#include <mach/thread_policy.h>
+
+// Promote a thread to the Mach time-constraint policy, the only real-time
+// scheduling class on macOS (see srsran_rt_sched_args_t). This is what keeps
+// wakeups inside the ~1ms subframe deadline and so what actually prevents radio
+// over/underruns; SCHED_FIFO on its own does not.
+static void thread_set_time_constraint(pthread_t pt)
+{
+  static bool logged = false;
+
+  // Convert microseconds to mach absolute-time ticks: ticks = ns * (denom / numer).
+  mach_timebase_info_data_t tb;
+  mach_timebase_info(&tb);
+  double ticks_per_us = 1000.0 * ((double)tb.denom / (double)tb.numer);
+
+  thread_time_constraint_policy_data_t pol;
+  pol.period      = (uint32_t)(rt_sched_args.period_us * ticks_per_us);
+  pol.computation = (uint32_t)(rt_sched_args.computation_us * ticks_per_us);
+  pol.constraint  = (uint32_t)(rt_sched_args.constraint_us * ticks_per_us);
+  // Preemptible: the policy is applied to several threads at once (the PHY
+  // workers plus radio txrx). Making them non-preemptible lets one of them block
+  // libuhd's USB/TX thread mid-window, which delivers samples late and triggers
+  // UHD "Tx ... timed out" burst restarts. Staying preemptible keeps the deadline
+  // hint while letting the radio threads interleave.
+  pol.preemptible = 1;
+
+  mach_port_t   mt = pthread_mach_thread_np(pt);
+  kern_return_t kr =
+      thread_policy_set(mt, THREAD_TIME_CONSTRAINT_POLICY, (thread_policy_t)&pol, THREAD_TIME_CONSTRAINT_POLICY_COUNT);
+  if (kr != KERN_SUCCESS) {
+    fprintf(stderr, "Warning: failed to set real-time (Mach time-constraint) policy: %d\n", (int)kr);
+  } else if (!logged) {
+    logged = true;
+    fprintf(stderr,
+            "Real-time scheduling enabled for RT threads (period=%uus computation=%uus constraint=%uus)\n",
+            rt_sched_args.period_us,
+            rt_sched_args.computation_us,
+            rt_sched_args.constraint_us);
+  }
+}
+#endif // __APPLE__
+
 bool threads_new_rt(pthread_t* thread, void* (*start_routine)(void*), void* arg)
 {
   return threads_new_rt_prio(thread, start_routine, arg, -1);
@@ -177,6 +237,20 @@ bool threads_new_rt_cpu(pthread_t* thread, void* (*start_routine)(void*), void* 
   } else {
     ret = true;
   }
+
+#ifdef __APPLE__
+  // Promote the threads that qualified for real-time priority to the Mach
+  // time-constraint policy. The condition mirrors which prio_offset values get
+  // SCHED_FIFO above, so normal-priority threads are never elevated.
+#ifdef PER_THREAD_PRIO
+  const bool is_rt = (prio_offset >= 0) || (prio_offset == -1);
+#else
+  const bool is_rt = (prio_offset >= 0 && prio_offset < 5);
+#endif
+  if (ret && is_rt && rt_sched_args.enable) {
+    thread_set_time_constraint(*thread);
+  }
+#endif
 
   if (attr_enable) {
     pthread_attr_destroy(&attr);

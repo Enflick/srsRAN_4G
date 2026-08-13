@@ -23,6 +23,7 @@
 #define SRSRAN_THREADS_H
 
 #include <pthread.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #ifdef __APPLE__
@@ -38,6 +39,37 @@
 #ifdef __cplusplus
 extern "C" {
 #endif // __cplusplus
+
+/**
+ * Deadline description for the threads that srsRAN creates at real-time
+ * priority, for platforms on which a real-time scheduling class alone is not
+ * enough to meet the subframe deadline.
+ *
+ * Only macOS needs this today: SCHED_FIFO there places a thread in a higher
+ * fixed-priority band but grants it no real-time guarantee, and the kernel may
+ * still preempt and demote it. The Mach time-constraint policy (what CoreAudio
+ * uses) is the only facility that actually reserves CPU time, and unlike
+ * SCHED_FIFO it does not require root. The fields below are its parameters:
+ * out of every `period_us`, the thread is promised `computation_us` of CPU
+ * within a `constraint_us` deadline.
+ *
+ * The defaults describe the 1ms LTE subframe cadence. Note that the sum of
+ * computation_us over all real-time threads must stay below one period or the
+ * scheduler refuses the reservation and demotes them, so configurations with
+ * many PHY threads may need a smaller computation_us.
+ *
+ * On other platforms the values are accepted and ignored.
+ */
+typedef struct {
+  bool     enable;
+  uint32_t period_us;
+  uint32_t computation_us;
+  uint32_t constraint_us;
+} srsran_rt_sched_args_t;
+
+/// Override the real-time scheduling deadline. Must be called before any
+/// real-time thread is created.
+void srsran_rt_sched_set_args(srsran_rt_sched_args_t args);
 
 bool threads_new_rt(pthread_t* thread, void* (*start_routine)(void*), void* arg);
 bool threads_new_rt_prio(pthread_t* thread, void* (*start_routine)(void*), void* arg, int prio_offset);

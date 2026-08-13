@@ -29,6 +29,7 @@
 #include "srsran/common/common_helper.h"
 #include "srsran/common/config_file.h"
 #include "srsran/common/crash_handler.h"
+#include "srsran/common/threads.h"
 #include "srsran/common/tsan_options.h"
 #include "srsran/srslog/event_trace.h"
 #include "srsran/srslog/srslog.h"
@@ -293,6 +294,10 @@ void parse_args(all_args_t* args, int argc, char* argv[])
     ("expert.rx_gain_offset", bpo::value<float>(&args->phy.rx_gain_offset)->default_value(62), "RX Gain offset to add to rx_gain to calibrate RSRP readings")
     ("expert.mac_prach_bi", bpo::value<uint32_t>(&args->stack.mac.prach_bi)->default_value(0), "Backoff Indicator to reduce contention in the PRACH channel")
     ("expert.use_cedron_f_est_alg", bpo::value<bool>(&args->phy.use_cedron_alg)->default_value(false), "Whether to use Cedron freq estimation algorithm or not")
+    ("expert.rt_sched_enable", bpo::value<bool>(&args->general.rt_sched_enable)->default_value(true), "Request a real-time scheduling reservation for the PHY/radio threads (macOS only; ignored elsewhere).")
+    ("expert.rt_sched_period_us", bpo::value<uint32_t>(&args->general.rt_sched_period_us)->default_value(1000), "Real-time scheduling reservation period in us (macOS only).")
+    ("expert.rt_sched_computation_us", bpo::value<uint32_t>(&args->general.rt_sched_computation_us)->default_value(250), "CPU time in us reserved per period for each real-time thread (macOS only). The sum over all real-time threads must stay below one period.")
+    ("expert.rt_sched_constraint_us", bpo::value<uint32_t>(&args->general.rt_sched_constraint_us)->default_value(1000), "Deadline in us within which the reserved computation must be scheduled (macOS only).")
 
     // eMBMS section
     ("embms.enable", bpo::value<bool>(&args->stack.embms.enable)->default_value(false), "Enables MBMS in the eNB")
@@ -498,6 +503,13 @@ void parse_args(all_args_t* args, int argc, char* argv[])
   }
 
   srsran_use_standard_symbol_size(use_standard_lte_rates);
+
+  srsran_rt_sched_args_t rt_sched_args = {};
+  rt_sched_args.enable                 = args->general.rt_sched_enable;
+  rt_sched_args.period_us              = args->general.rt_sched_period_us;
+  rt_sched_args.computation_us         = args->general.rt_sched_computation_us;
+  rt_sched_args.constraint_us          = args->general.rt_sched_constraint_us;
+  srsran_rt_sched_set_args(rt_sched_args);
 }
 
 static bool do_metrics = false;
