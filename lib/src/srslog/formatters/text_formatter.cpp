@@ -48,10 +48,19 @@ static void format_hex_dump(const std::vector<uint8_t>& v, fmt::memory_buffer& b
 /// Format the log metadata into the input buffer.
 static void format_metadata(const detail::log_entry_metadata& metadata, fmt::memory_buffer& buffer)
 {
-  // Time stamp data preparation.
-  std::tm current_time = fmt::gmtime(std::chrono::high_resolution_clock::to_time_t(metadata.tp));
+  // Time stamp data preparation. metadata.tp comes from high_resolution_clock,
+  // which is an alias of system_clock on glibc but of steady_clock elsewhere
+  // (e.g. libc++), where its epoch is the boot time and to_time_t() does not
+  // even exist. Translate the time point into system_clock using the current
+  // offset between the two clocks, which is exact whenever they are the same
+  // clock and accurate to the sampling gap otherwise.
+  auto sys_now = std::chrono::system_clock::now();
+  auto hr_now  = std::chrono::high_resolution_clock::now();
+  auto wall_tp = sys_now + std::chrono::duration_cast<std::chrono::system_clock::duration>(metadata.tp - hr_now);
+
+  std::tm current_time = fmt::gmtime(std::chrono::system_clock::to_time_t(wall_tp));
   auto    us_fraction =
-      std::chrono::duration_cast<std::chrono::microseconds>(metadata.tp.time_since_epoch()).count() % 1000000u;
+      std::chrono::duration_cast<std::chrono::microseconds>(wall_tp.time_since_epoch()).count() % 1000000u;
   fmt::format_to(buffer, "{:%F}T{:%H:%M:%S}.{:06} ", current_time, current_time, us_fraction);
 
   // Format optional fields if present.
