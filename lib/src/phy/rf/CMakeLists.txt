@@ -48,6 +48,9 @@ if(RF_FOUND)
       list(APPEND STATIC_PLUGINS srsran_rf_uhd)
     endif (ENABLE_RF_PLUGINS)
     target_link_libraries(srsran_rf_uhd srsran_rf_utils srsran_phy ${UHD_LIBRARIES} ${Boost_LIBRARIES})
+    # UHD 4.8+ headers use C++17 (std::optional, *_v traits); the plugin is self-contained so raise only its standard.
+    # Appended after CMAKE_CXX_FLAGS, so it overrides the project-wide -std=c++14.
+    target_compile_options(srsran_rf_uhd PRIVATE -std=c++17)
     install(TARGETS srsran_rf_uhd DESTINATION ${LIBRARY_DIR} OPTIONAL)
 
     # If found, add a macro to inform the UHD driver about the available feature
