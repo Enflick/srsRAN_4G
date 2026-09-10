@@ -136,8 +136,9 @@ void txrx::run_thread()
   // Set TTI so that first TX is at tti=0
   tti = TTI_SUB(0, FDD_HARQ_DELAY_UL_MS + 1);
 
-  // Diagnostic: consecutive rx_now() failures (see log below)
+  // Consecutive rx_now() failures and whether a valid reception timestamp was ever obtained (see failure handling)
   uint32_t nof_consecutive_rx_failures = 0;
+  bool     timestamp_valid            = false;
 
   // Main loop
   while (running) {
@@ -190,19 +191,31 @@ void txrx::run_thread()
 
     buffer.set_nof_samples(sf_len);
     if (not radio_h->rx_now(buffer, timestamp)) {
-      // Diagnostic only (known issue, not yet fixed): the receive failed but this loop currently keeps going and
-      // hands the workers an unwritten buffer and a stale/zero timestamp, so TX gets scheduled at a bogus time.
-      // Logged rate-limited so the preserved logs prove how often it happens and with what timestamp.
+      // The receive failed and the buffer content is undefined. Zero it so UL processing sees noise instead of stale
+      // samples, and keep the TX cadence by advancing the last valid reception time by one subframe. A persistent
+      // failure is reported by the RF driver as a fatal error and ends in phy::radio_failure().
+      cf_t** rx = buffer.to_cf_t();
+      for (uint32_t ch = 0; ch < SRSRAN_MAX_CHANNELS; ch++) {
+        if (rx[ch] != nullptr) {
+          srsran_vec_cf_zero(rx[ch], sf_len);
+        }
+      }
+      if (timestamp_valid) {
+        timestamp.add(1e-3);
+      }
       nof_consecutive_rx_failures++;
       if (nof_consecutive_rx_failures == 1 or nof_consecutive_rx_failures % 1000 == 0) {
-        logger.error("rx_now failed (%u consecutive). Continuing with unwritten buffer, rxd_time=%ld:%.6f",
+        logger.error("rx_now failed (%u consecutive). Using zeroed buffer, rxd_time=%ld:%.6f",
                      nof_consecutive_rx_failures,
                      (long)timestamp.get(0).full_secs,
                      timestamp.get(0).frac_secs);
       }
-    } else if (nof_consecutive_rx_failures > 0) {
-      logger.warning("rx_now recovered after %u consecutive failures", nof_consecutive_rx_failures);
-      nof_consecutive_rx_failures = 0;
+    } else {
+      timestamp_valid = true;
+      if (nof_consecutive_rx_failures > 0) {
+        logger.warning("rx_now recovered after %u consecutive failures", nof_consecutive_rx_failures);
+        nof_consecutive_rx_failures = 0;
+      }
     }
 
     if (ul_channel) {
