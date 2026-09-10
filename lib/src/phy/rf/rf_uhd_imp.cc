@@ -131,6 +131,27 @@ static const std::chrono::milliseconds RF_UHD_IMP_ASYNCH_MSG_SLEEP_MS = std::chr
 static const uint32_t RF_UHD_IMP_MAX_RX_TRIALS = 100;
 
 /**
+ * RX stall detection: how long the receiver may go without a single successful reception, while the stream is
+ * supposed to be running, before the asynchronous message thread declares the RX stream stalled and raises a fatal
+ * RX error (SRSRAN_RF_ERROR_RX). This covers the case where UHD's recv blocks indefinitely inside the USB transport
+ * and never returns control to the caller, so no error code can be acted upon.
+ */
+static const uint64_t RF_UHD_IMP_RX_STALL_TIMEOUT_MS = 5000;
+
+/**
+ * Number of consecutive receive timeouts after which a fatal RX error (SRSRAN_RF_ERROR_RX) is raised. On devices in
+ * RF_UHD_IMP_PROHIBITED_STOP_START the stream is never restarted after a timeout, so repeated timeouts cannot
+ * self-heal and the stack has to be told.
+ */
+static const uint32_t RF_UHD_IMP_MAX_CONSECUTIVE_RX_TIMEOUTS = 3;
+
+static inline uint64_t rf_uhd_steady_ms()
+{
+  return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
+
+/**
  * Timeout for end of burst ack.
  */
 static const double RF_UHD_IMP_WAIT_EOB_ACK_TIMEOUT_S = 2.0;
@@ -164,6 +185,12 @@ struct rf_uhd_handler_t {
   double current_master_clock = 0.0;
 
   bool rx_stream_enabled = false;
+
+  // RX liveness tracking (see RF_UHD_IMP_RX_STALL_TIMEOUT_MS and RF_UHD_IMP_MAX_CONSECUTIVE_RX_TIMEOUTS).
+  // last_rx_ok_ms is armed when the stream starts, stamped on every successful reception and 0 while stopped.
+  std::atomic<uint64_t> last_rx_ok_ms{0};
+  std::atomic<uint32_t> consecutive_rx_timeouts{0};
+  std::atomic<bool>     rx_fatal_reported{false};
 
   std::mutex tx_mutex;
   std::mutex rx_mutex;
@@ -275,6 +302,13 @@ static void* async_thread(void* h)
   uhd::time_spec_t      last_underflow_ts = {};
   uhd::time_spec_t      last_late_ts      = {};
 
+  // Rate limiting for the eob_ack_timeout write-site logs below: Late/Underflow events can arrive in bursts of many
+  // per second, so at most one line per second is printed, carrying the number of suppressed events.
+  uint64_t late_log_next_ms       = 0;
+  uint32_t late_suppressed        = 0;
+  uint64_t underflow_log_next_ms  = 0;
+  uint32_t underflow_suppressed   = 0;
+
   while (handler->async_thread_running) {
     std::unique_lock<std::mutex> lock(handler->async_mutex);
     bool                         valid = false;
@@ -297,12 +331,35 @@ static void* async_thread(void* h)
           if (md.time_spec != last_underflow_ts) {
             last_underflow_ts        = md.time_spec;
             handler->eob_ack_timeout = md.time_spec + RF_UHD_IMP_WAIT_EOB_ACK_TIMEOUT_S;
+            // Written without tx_mutex while rf_uhd_send_timed_multi reads it under tx_mutex; logged so a torn or
+            // stale value observed by the reader can be correlated against the values actually written here.
+            uint64_t now_ms = rf_uhd_steady_ms();
+            if (now_ms >= underflow_log_next_ms) {
+              Info("Underflow at " << md.time_spec.get_real_secs() << ", eob_ack_timeout set to "
+                                   << handler->eob_ack_timeout.get_real_secs() << " (+" << underflow_suppressed
+                                   << " suppressed)");
+              underflow_suppressed   = 0;
+              underflow_log_next_ms  = now_ms + 1000;
+            } else {
+              underflow_suppressed++;
+            }
             log_underflow(handler);
           }
         } else if (event_code == uhd::async_metadata_t::EVENT_CODE_TIME_ERROR) {
           if (md.time_spec != last_late_ts) {
             last_late_ts             = md.time_spec;
             handler->eob_ack_timeout = md.time_spec + RF_UHD_IMP_WAIT_EOB_ACK_TIMEOUT_S;
+            // See the underflow branch: unsynchronized write, logged for read/write correlation (rate limited).
+            uint64_t now_ms = rf_uhd_steady_ms();
+            if (now_ms >= late_log_next_ms) {
+              Info("Late at " << md.time_spec.get_real_secs() << ", eob_ack_timeout set to "
+                              << handler->eob_ack_timeout.get_real_secs() << " (+" << late_suppressed
+                              << " suppressed)");
+              late_suppressed  = 0;
+              late_log_next_ms = now_ms + 1000;
+            } else {
+              late_suppressed++;
+            }
             log_late(handler, false);
           }
         } else if (event_code == uhd::async_metadata_t::EVENT_CODE_BURST_ACK) {
@@ -316,6 +373,24 @@ static void* async_thread(void* h)
         }
       } else {
         std::this_thread::sleep_for(RF_UHD_IMP_ASYNCH_MSG_SLEEP_MS);
+      }
+
+      // RX liveness watchdog: while the RX stream is armed (last_rx_ok_ms != 0), a receiver that has not delivered a
+      // single sample for RF_UHD_IMP_RX_STALL_TIMEOUT_MS is considered stalled. This thread is the only one
+      // guaranteed to stay responsive in that situation: the receiver thread can be blocked indefinitely inside the
+      // USB transport (holding rx_mutex, which also wedges any thread entering rf_uhd_flush_buffer), so the fatal RX
+      // error must be raised from here.
+      uint64_t last_rx_ms = handler->last_rx_ok_ms;
+      if (last_rx_ms != 0 and not handler->rx_fatal_reported) {
+        uint64_t now_ms = rf_uhd_steady_ms();
+        if (now_ms - last_rx_ms > RF_UHD_IMP_RX_STALL_TIMEOUT_MS) {
+          handler->rx_fatal_reported = true;
+          Error("RX stream stalled: no samples received for " << (now_ms - last_rx_ms)
+                                                              << " ms. Raising fatal RX error.");
+          ERROR("RX stream stalled: no samples received for %llu ms. Raising fatal RX error.",
+                (unsigned long long)(now_ms - last_rx_ms));
+          log_rx_error(handler);
+        }
       }
     }
   }
@@ -523,6 +598,11 @@ static inline int rf_uhd_start_rx_stream_nolock(rf_uhd_handler_t* handler)
 
   handler->rx_stream_enabled = true;
 
+  // Arm the RX liveness watchdog: from now on samples are expected to flow
+  handler->last_rx_ok_ms           = rf_uhd_steady_ms();
+  handler->consecutive_rx_timeouts = 0;
+  handler->rx_fatal_reported       = false;
+
   return SRSRAN_SUCCESS;
 }
 
@@ -549,6 +629,9 @@ static inline int rf_uhd_stop_rx_stream_nolock(rf_uhd_handler_t* handler)
 
   handler->rx_stream_enabled = false;
 
+  // Disarm the RX liveness watchdog: no samples are expected while the stream is stopped
+  handler->last_rx_ok_ms = 0;
+
   return SRSRAN_SUCCESS;
 }
 
@@ -570,9 +653,28 @@ int rf_uhd_stop_rx_stream(void* h)
 
 void rf_uhd_flush_buffer(void* h)
 {
-  rf_uhd_handler_t*            handler = (rf_uhd_handler_t*)h;
-  std::unique_lock<std::mutex> lock(handler->rx_mutex);
-  size_t                       rxd_samples               = 0;
+  rf_uhd_handler_t* handler = (rf_uhd_handler_t*)h;
+
+  // Diagnostic (no behavior change): rx_mutex is held by the receiver thread for the whole duration of
+  // rf_uhd_recv_with_time_multi, including a UHD recv that can block indefinitely if the RX transport stalls. When
+  // that happens, PHY worker threads calling this function wedge here silently. Log the wait once per second so the
+  // condition is visible in the preserved logs; the wait itself is still unbounded, as before.
+  std::unique_lock<std::mutex> lock(handler->rx_mutex, std::defer_lock);
+  const uint64_t               wait_start_ms  = rf_uhd_steady_ms();
+  uint64_t                     next_report_ms = wait_start_ms + 1000;
+  while (not lock.try_lock()) {
+    uint64_t now_ms = rf_uhd_steady_ms();
+    if (now_ms >= next_report_ms) {
+      Warning("rf_uhd_flush_buffer blocked on rx_mutex for " << (now_ms - wait_start_ms)
+                                                             << " ms (receiver stalled?)");
+      ERROR("rf_uhd_flush_buffer blocked on rx_mutex for %llu ms (receiver stalled?)",
+            (unsigned long long)(now_ms - wait_start_ms));
+      next_report_ms = now_ms + 1000;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+
+  size_t rxd_samples               = 0;
   void*                        data[SRSRAN_MAX_CHANNELS] = {};
 
   // Set all pointers to zero buffer
@@ -989,6 +1091,20 @@ static inline int rf_uhd_imp_end_burst(rf_uhd_handler_t* handler)
 
   // Update TX state to wait for end of burst ACK
   handler->tx_state = RF_UHD_IMP_TX_STATE_WAIT_EOB_ACK;
+  {
+    // Rate limited: every Late/Underflow burst funnels through here. Callers hold tx_mutex, so statics are safe.
+    static uint64_t eob_log_next_ms = 0;
+    static uint32_t eob_suppressed  = 0;
+    uint64_t        now_ms          = rf_uhd_steady_ms();
+    if (now_ms >= eob_log_next_ms) {
+      Info("EOB sent, waiting for EOB ACK (eob_ack_timeout=" << handler->eob_ack_timeout.get_real_secs() << ", +"
+                                                             << eob_suppressed << " suppressed)");
+      eob_suppressed  = 0;
+      eob_log_next_ms = now_ms + 1000;
+    } else {
+      eob_suppressed++;
+    }
+  }
 
   return SRSRAN_SUCCESS;
 }
@@ -1332,16 +1448,30 @@ int rf_uhd_recv_with_time_multi(void*    h,
     rxd_samples_total += rxd_samples;
     trials++;
 
+    // Any delivered samples count as RX liveness: stamp the watchdog and reset the timeout escalation
+    if (rxd_samples > 0) {
+      handler->last_rx_ok_ms           = rf_uhd_steady_ms();
+      handler->consecutive_rx_timeouts = 0;
+      handler->rx_fatal_reported       = false;
+    }
+
     if (error_code == uhd::rx_metadata_t::ERROR_CODE_OVERFLOW) {
       log_overflow(handler);
     } else if (error_code == uhd::rx_metadata_t::ERROR_CODE_LATE_COMMAND) {
       log_late(handler, true);
     } else if (error_code == uhd::rx_metadata_t::ERROR_CODE_TIMEOUT) {
-      ERROR("Error timed out while receiving samples from UHD.");
+      uint32_t nof_timeouts = ++handler->consecutive_rx_timeouts;
+      ERROR("Error timed out while receiving samples from UHD (%u consecutive).", nof_timeouts);
 
       if (RF_UHD_IMP_PROHIBITED_STOP_START.count(handler->devname) == 0) {
         // Stop Rx stream
         rf_uhd_stop_rx_stream_nolock(handler);
+      } else if (nof_timeouts >= RF_UHD_IMP_MAX_CONSECUTIVE_RX_TIMEOUTS and
+                 not handler->rx_fatal_reported.exchange(true)) {
+        // This device class never restarts the stream after a timeout, so repeated timeouts cannot self-heal.
+        // Raise a fatal RX error so the stack can act (previously this returned -1 into callers that ignore it).
+        Error("RX timed out " << nof_timeouts << " consecutive times. Raising fatal RX error.");
+        log_rx_error(handler);
       }
 
       return -1;

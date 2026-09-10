@@ -78,7 +78,7 @@ public:
   void cmd_cell_measure() override;
 
   void radio_overflow() override{};
-  void radio_failure() override{};
+  void radio_failure() override;
 
   void srsran_phy_logger(phy_logger_level_t log_level, char* str);
 

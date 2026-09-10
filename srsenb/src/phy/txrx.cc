@@ -136,6 +136,9 @@ void txrx::run_thread()
   // Set TTI so that first TX is at tti=0
   tti = TTI_SUB(0, FDD_HARQ_DELAY_UL_MS + 1);
 
+  // Diagnostic: consecutive rx_now() failures (see log below)
+  uint32_t nof_consecutive_rx_failures = 0;
+
   // Main loop
   while (running) {
     tti = TTI_ADD(tti, 1);
@@ -186,7 +189,21 @@ void txrx::run_thread()
     }
 
     buffer.set_nof_samples(sf_len);
-    radio_h->rx_now(buffer, timestamp);
+    if (not radio_h->rx_now(buffer, timestamp)) {
+      // Diagnostic only (known issue, not yet fixed): the receive failed but this loop currently keeps going and
+      // hands the workers an unwritten buffer and a stale/zero timestamp, so TX gets scheduled at a bogus time.
+      // Logged rate-limited so the preserved logs prove how often it happens and with what timestamp.
+      nof_consecutive_rx_failures++;
+      if (nof_consecutive_rx_failures == 1 or nof_consecutive_rx_failures % 1000 == 0) {
+        logger.error("rx_now failed (%u consecutive). Continuing with unwritten buffer, rxd_time=%ld:%.6f",
+                     nof_consecutive_rx_failures,
+                     (long)timestamp.get(0).full_secs,
+                     timestamp.get(0).frac_secs);
+      }
+    } else if (nof_consecutive_rx_failures > 0) {
+      logger.warning("rx_now recovered after %u consecutive failures", nof_consecutive_rx_failures);
+      nof_consecutive_rx_failures = 0;
+    }
 
     if (ul_channel) {
       ul_channel->run(buffer.to_cf_t(), buffer.to_cf_t(), sf_len, timestamp.get(0));

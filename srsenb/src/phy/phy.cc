@@ -22,7 +22,10 @@
 #include "srsenb/hdr/phy/phy.h"
 #include "srsran/common/band_helper.h"
 #include "srsran/common/phy_cfg_nr_default.h"
+#include "srsran/common/standard_streams.h"
 #include "srsran/common/threads.h"
+#include <atomic>
+#include <csignal>
 #include <pthread.h>
 #include <sstream>
 #include <string.h>
@@ -52,6 +55,20 @@ static void srsran_phy_handler(phy_logger_level_t log_level, void* ctx, char* st
 {
   phy* r = (phy*)ctx;
   r->srsran_phy_logger(log_level, str);
+}
+
+void phy::radio_failure()
+{
+  // A fatal RX error means the RF front-end stopped delivering samples. On the B2xx this is not recoverable
+  // in-process (the driver forbids RX stream stop/start and stream re-creation), so fail fast: shut down cleanly and
+  // let the supervisor restart the whole process, instead of hanging until an external CPU watchdog notices.
+  static std::atomic<bool> once{false};
+  if (once.exchange(true)) {
+    return;
+  }
+  phy_log.error("Radio failure reported by the RF driver. Shutting down for a supervised restart.");
+  srsran::console("Radio failure: RX stream stalled or fatal RX error. Shutting down srsenb...\n");
+  raise(SIGTERM);
 }
 
 void phy::srsran_phy_logger(phy_logger_level_t log_level, char* str)
