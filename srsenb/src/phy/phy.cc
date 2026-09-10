@@ -24,15 +24,13 @@
 #include "srsran/common/phy_cfg_nr_default.h"
 #include "srsran/common/standard_streams.h"
 #include "srsran/common/threads.h"
+#include "srsran/srslog/srslog.h"
 #include <atomic>
-#include <csignal>
-#include <chrono>
 #include <pthread.h>
 #include <sstream>
 #include <string.h>
 #include <string>
 #include <strings.h>
-#include <thread>
 #include <unistd.h>
 
 #define Error(fmt, ...)                                                                                                \
@@ -59,31 +57,24 @@ static void srsran_phy_handler(phy_logger_level_t log_level, void* ctx, char* st
   r->srsran_phy_logger(log_level, str);
 }
 
-// Seconds the orderly shutdown started by radio_failure() may take before the process is force-exited
-static const uint32_t RADIO_FAILURE_EXIT_DEADLINE_S = 5;
+// Exit status handed to the supervisor when the RF front-end failed; distinct from a crash or a user stop
+static const int RADIO_FAILURE_EXIT_STATUS = 2;
 
 void phy::radio_failure()
 {
   // A fatal RX error means the RF front-end stopped delivering samples. On the B2xx this is not recoverable
-  // in-process (the driver forbids RX stream stop/start and stream re-creation), so fail fast: shut down cleanly and
-  // let the supervisor restart the whole process, instead of hanging until an external CPU watchdog notices.
+  // in-process (the driver forbids RX stream stop/start and stream re-creation), so the process has to be restarted by
+  // the supervisor. The orderly shutdown is skipped on purpose: it joins the txrx thread and the PHY workers, which are
+  // typically blocked inside the RF driver in exactly this situation, and every second spent here is a second the cell
+  // is off air. Flush the logs so the evidence survives, then exit.
   static std::atomic<bool> once{false};
   if (once.exchange(true)) {
     return;
   }
-  phy_log.error("Radio failure reported by the RF driver. Shutting down for a supervised restart.");
-  srsran::console("Radio failure: RX stream stalled or fatal RX error. Shutting down srsenb...\n");
-
-  // The orderly shutdown joins the txrx thread and the PHY workers. Either can be blocked inside the RF driver in this
-  // situation, so guarantee the supervisor sees an exit even if that join never returns.
-  std::thread([]() {
-    std::this_thread::sleep_for(std::chrono::seconds(RADIO_FAILURE_EXIT_DEADLINE_S));
-    srsran::console_stderr("Shutdown did not complete within %u s after radio failure, forcing exit\n",
-                           RADIO_FAILURE_EXIT_DEADLINE_S);
-    _exit(2);
-  }).detach();
-
-  raise(SIGTERM);
+  phy_log.error("Radio failure reported by the RF driver. Exiting for a supervised restart.");
+  srsran::console("Radio failure: RX stream stalled or fatal RX error. Exiting srsenb for a supervised restart...\n");
+  srslog::flush();
+  _exit(RADIO_FAILURE_EXIT_STATUS);
 }
 
 void phy::srsran_phy_logger(phy_logger_level_t log_level, char* str)
