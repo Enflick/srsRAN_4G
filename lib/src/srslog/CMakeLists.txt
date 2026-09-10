@@ -24,7 +24,8 @@ set(SOURCES
     srslog_c.cpp
     event_trace.cpp)
 
-include_directories(${PROJECT_SOURCE_DIR}/lib/include/srsran/srslog/bundled/)
+# BEFORE: the bundled fmt must shadow any system-wide fmt found through the global include paths (e.g. Homebrew)
+include_directories(BEFORE ${PROJECT_SOURCE_DIR}/lib/include/srsran/srslog/bundled/)
 include_directories(${PROJECT_SOURCE_DIR}/lib/include/srsran/srslog/formatters)
 
 set(SOURCES
