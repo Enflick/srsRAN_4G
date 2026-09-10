@@ -164,8 +164,16 @@ int enb_stack_lte::init(const stack_args_t&      args_,
 
 void enb_stack_lte::tti_clock()
 {
-  if (started.load(std::memory_order_relaxed)) {
-    sync_task_queue.push([this]() { tti_clock_impl(); });
+  if (not started.load(std::memory_order_relaxed)) {
+    return;
+  }
+  // Called from the PHY receiver thread: never block it on the stack thread. A full queue means the stack thread has
+  // not run for sync_queue_size TTIs; drop the tick rather than freeze the radio.
+  if (not sync_task_queue.try_push([this]() { tti_clock_impl(); })) {
+    tti_clock_drops++;
+    if (tti_clock_drops == 1 or tti_clock_drops % 1000 == 0) {
+      stack_logger.error("Stack sync queue full, dropped %u tti_clock ticks", tti_clock_drops);
+    }
   }
 }
 

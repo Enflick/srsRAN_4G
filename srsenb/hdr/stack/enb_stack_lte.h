@@ -153,6 +153,7 @@ private:
   void run_thread() override;
   void stop_impl();
   void tti_clock_impl();
+  uint32_t tti_clock_drops = 0;
 
   // args
   stack_args_t args    = {};
