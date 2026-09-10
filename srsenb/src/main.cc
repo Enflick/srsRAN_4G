@@ -302,8 +302,9 @@ void parse_args(all_args_t* args, int argc, char* argv[])
     ("expert.use_cedron_f_est_alg", bpo::value<bool>(&args->phy.use_cedron_alg)->default_value(false), "Whether to use Cedron freq estimation algorithm or not")
     ("expert.rt_sched_enable", bpo::value<bool>(&args->general.rt_sched_enable)->default_value(true), "Request a real-time scheduling reservation for the PHY/radio threads (macOS only; ignored elsewhere).")
     ("expert.rt_sched_period_us", bpo::value<uint32_t>(&args->general.rt_sched_period_us)->default_value(1000), "Real-time scheduling reservation period in us (macOS only).")
-    ("expert.rt_sched_computation_us", bpo::value<uint32_t>(&args->general.rt_sched_computation_us)->default_value(250), "CPU time in us reserved per period for each real-time thread (macOS only). The sum over all real-time threads must stay below one period.")
+    ("expert.rt_sched_computation_us", bpo::value<uint32_t>(&args->general.rt_sched_computation_us)->default_value(250), "CPU time in us requested per period for each real-time thread (macOS only). Reduced automatically so the sum over all real-time threads stays within rt_sched_budget_pct of one period.")
     ("expert.rt_sched_constraint_us", bpo::value<uint32_t>(&args->general.rt_sched_constraint_us)->default_value(1000), "Deadline in us within which the reserved computation must be scheduled (macOS only).")
+    ("expert.rt_sched_budget_pct", bpo::value<uint32_t>(&args->general.rt_sched_budget_pct)->default_value(80), "Share of one period, in percent, that all real-time threads together may reserve (macOS only).")
 
     // eMBMS section
     ("embms.enable", bpo::value<bool>(&args->stack.embms.enable)->default_value(false), "Enables MBMS in the eNB")
@@ -515,6 +516,16 @@ void parse_args(all_args_t* args, int argc, char* argv[])
   rt_sched_args.period_us              = args->general.rt_sched_period_us;
   rt_sched_args.computation_us         = args->general.rt_sched_computation_us;
   rt_sched_args.constraint_us          = args->general.rt_sched_constraint_us;
+  rt_sched_args.budget_pct             = args->general.rt_sched_budget_pct;
+  if (rt_sched_args.budget_pct == 0 or rt_sched_args.budget_pct > 100) {
+    fprintf(stderr, "Error: rt_sched_budget_pct must be within 1..100\n");
+    exit(1);
+  }
+  if (rt_sched_args.computation_us > rt_sched_args.constraint_us or
+      rt_sched_args.constraint_us > rt_sched_args.period_us) {
+    fprintf(stderr, "Error: rt_sched requires computation_us <= constraint_us <= period_us\n");
+    exit(1);
+  }
   srsran_rt_sched_set_args(rt_sched_args);
 }
 

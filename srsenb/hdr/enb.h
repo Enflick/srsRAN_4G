@@ -116,6 +116,7 @@ struct general_args_t {
   uint32_t    rt_sched_period_us;
   uint32_t    rt_sched_computation_us;
   uint32_t    rt_sched_constraint_us;
+  uint32_t    rt_sched_budget_pct;
 };
 
 struct all_args_t {

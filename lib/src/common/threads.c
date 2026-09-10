@@ -35,6 +35,7 @@ static srsran_rt_sched_args_t rt_sched_args = {
     .period_us      = 1000,
     .computation_us = 250,
     .constraint_us  = 1000,
+    .budget_pct     = 80,
 };
 
 void srsran_rt_sched_set_args(srsran_rt_sched_args_t args)
@@ -48,14 +49,33 @@ void srsran_rt_sched_set_args(srsran_rt_sched_args_t args)
 #include <mach/thread_act.h>
 #include <mach/thread_policy.h>
 
-// Promote a thread to the Mach time-constraint policy, the only real-time
-// scheduling class on macOS (see srsran_rt_sched_args_t). This is what keeps
-// wakeups inside the ~1ms subframe deadline and so what actually prevents radio
-// over/underruns; SCHED_FIFO on its own does not.
-static void thread_set_time_constraint(pthread_t pt)
-{
-  static bool logged = false;
+// Smallest computation the kernel accepts for a time-constraint thread (XNU min_rt_quantum).
+#define RT_MIN_COMPUTATION_US 50
+// Upper bound on threads holding a reservation at once; srsenb needs 1 + nof_phy_threads.
+#define RT_MAX_THREADS 32
 
+// Threads currently holding a reservation. Guarded by rt_mutex.
+static pthread_mutex_t rt_mutex = PTHREAD_MUTEX_INITIALIZER;
+static mach_port_t     rt_threads[RT_MAX_THREADS];
+static uint32_t        rt_nof_threads = 0;
+
+// Per-thread computation such that the sum over all reserved threads stays within budget_pct of one period.
+static uint32_t rt_computation_us(uint32_t nof_threads)
+{
+  uint32_t budget_us = (uint32_t)(((uint64_t)rt_sched_args.period_us * rt_sched_args.budget_pct) / 100);
+  uint32_t share_us  = nof_threads > 0 ? budget_us / nof_threads : budget_us;
+  uint32_t comp_us   = rt_sched_args.computation_us < share_us ? rt_sched_args.computation_us : share_us;
+  if (comp_us < RT_MIN_COMPUTATION_US) {
+    comp_us = RT_MIN_COMPUTATION_US;
+  }
+  if (comp_us > rt_sched_args.constraint_us) {
+    comp_us = rt_sched_args.constraint_us;
+  }
+  return comp_us;
+}
+
+static kern_return_t rt_apply_policy(mach_port_t mt, uint32_t computation_us)
+{
   // Convert microseconds to mach absolute-time ticks: ticks = ns * (denom / numer).
   mach_timebase_info_data_t tb;
   mach_timebase_info(&tb);
@@ -63,7 +83,7 @@ static void thread_set_time_constraint(pthread_t pt)
 
   thread_time_constraint_policy_data_t pol;
   pol.period      = (uint32_t)(rt_sched_args.period_us * ticks_per_us);
-  pol.computation = (uint32_t)(rt_sched_args.computation_us * ticks_per_us);
+  pol.computation = (uint32_t)(computation_us * ticks_per_us);
   pol.constraint  = (uint32_t)(rt_sched_args.constraint_us * ticks_per_us);
   // Preemptible: the policy is applied to several threads at once (the PHY
   // workers plus radio txrx). Making them non-preemptible lets one of them block
@@ -72,19 +92,64 @@ static void thread_set_time_constraint(pthread_t pt)
   // hint while letting the radio threads interleave.
   pol.preemptible = 1;
 
-  mach_port_t   mt = pthread_mach_thread_np(pt);
-  kern_return_t kr =
-      thread_policy_set(mt, THREAD_TIME_CONSTRAINT_POLICY, (thread_policy_t)&pol, THREAD_TIME_CONSTRAINT_POLICY_COUNT);
-  if (kr != KERN_SUCCESS) {
-    fprintf(stderr, "Warning: failed to set real-time (Mach time-constraint) policy: %d\n", (int)kr);
-  } else if (!logged) {
-    logged = true;
-    fprintf(stderr,
-            "Real-time scheduling enabled for RT threads (period=%uus computation=%uus constraint=%uus)\n",
-            rt_sched_args.period_us,
-            rt_sched_args.computation_us,
-            rt_sched_args.constraint_us);
+  return thread_policy_set(mt, THREAD_TIME_CONSTRAINT_POLICY, (thread_policy_t)&pol, THREAD_TIME_CONSTRAINT_POLICY_COUNT);
+}
+
+// Promote a thread to the Mach time-constraint policy, the only real-time
+// scheduling class on macOS (see srsran_rt_sched_args_t). This is what keeps
+// wakeups inside the ~1ms subframe deadline and so what actually prevents radio
+// over/underruns; SCHED_FIFO on its own does not.
+//
+// Every reserved thread is registered here and the per-thread computation is
+// recomputed from the number of reserved threads, so the total never exceeds
+// the configured share of a period. Adding a thread that would overcommit the
+// budget shrinks the reservation of the threads already running.
+static void thread_set_time_constraint(pthread_t pt)
+{
+  mach_port_t mt = pthread_mach_thread_np(pt);
+
+  pthread_mutex_lock(&rt_mutex);
+
+  if (rt_nof_threads >= RT_MAX_THREADS) {
+    pthread_mutex_unlock(&rt_mutex);
+    fprintf(stderr, "Warning: more than %d real-time threads, not reserving CPU time for this one\n", RT_MAX_THREADS);
+    return;
   }
+
+  uint32_t prev_comp_us = rt_computation_us(rt_nof_threads);
+  rt_threads[rt_nof_threads++] = mt;
+  uint32_t comp_us = rt_computation_us(rt_nof_threads);
+
+  kern_return_t kr = rt_apply_policy(mt, comp_us);
+  if (kr != KERN_SUCCESS) {
+    rt_nof_threads--;
+    pthread_mutex_unlock(&rt_mutex);
+    fprintf(stderr, "Warning: failed to set real-time (Mach time-constraint) policy: %d\n", (int)kr);
+    return;
+  }
+
+  // Rebalance the threads already reserved if their share shrank
+  if (comp_us != prev_comp_us) {
+    for (uint32_t i = 0; i + 1 < rt_nof_threads; i++) {
+      // A thread that already exited fails here; nothing to rebalance for it
+      rt_apply_policy(rt_threads[i], comp_us);
+    }
+  }
+
+  uint32_t nof_threads = rt_nof_threads;
+  pthread_mutex_unlock(&rt_mutex);
+
+  fprintf(stderr,
+          "Real-time scheduling: %u thread%s reserved, period=%uus computation=%uus each (%u%% of period in total, "
+          "budget %u%%) constraint=%uus%s\n",
+          nof_threads,
+          nof_threads == 1 ? "" : "s",
+          rt_sched_args.period_us,
+          comp_us,
+          (uint32_t)(((uint64_t)comp_us * nof_threads * 100) / rt_sched_args.period_us),
+          rt_sched_args.budget_pct,
+          rt_sched_args.constraint_us,
+          comp_us < rt_sched_args.computation_us ? " (requested computation reduced to fit budget)" : "");
 }
 #endif // __APPLE__
 
@@ -239,14 +304,13 @@ bool threads_new_rt_cpu(pthread_t* thread, void* (*start_routine)(void*), void* 
   }
 
 #ifdef __APPLE__
-  // Promote the threads that qualified for real-time priority to the Mach
-  // time-constraint policy. The condition mirrors which prio_offset values get
-  // SCHED_FIFO above, so normal-priority threads are never elevated.
-#ifdef PER_THREAD_PRIO
-  const bool is_rt = (prio_offset >= 0) || (prio_offset == -1);
-#else
-  const bool is_rt = (prio_offset >= 0 && prio_offset < 5);
-#endif
+  // Promote the subframe-deadline threads to the Mach time-constraint policy.
+  // Only the two highest priority bands qualify: the radio txrx thread (offset
+  // 1) and the PHY workers (offset 2) in srsenb. The stack (4) and PRACH (5)
+  // threads are elevated by SCHED_FIFO above but carry no subframe deadline, so
+  // reserving CPU time for them only overcommits the budget shared by the
+  // threads that do.
+  const bool is_rt = (prio_offset >= 0 && prio_offset < 3);
   if (ret && is_rt && rt_sched_args.enable) {
     thread_set_time_constraint(*thread);
   }

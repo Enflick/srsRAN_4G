@@ -53,10 +53,14 @@ extern "C" {
  * out of every `period_us`, the thread is promised `computation_us` of CPU
  * within a `constraint_us` deadline.
  *
- * The defaults describe the 1ms LTE subframe cadence. Note that the sum of
- * computation_us over all real-time threads must stay below one period or the
- * scheduler refuses the reservation and demotes them, so configurations with
- * many PHY threads may need a smaller computation_us.
+ * The defaults describe the 1ms LTE subframe cadence. The reservation is only
+ * applied to the subframe-deadline threads (radio txrx and the PHY workers, the
+ * two highest priority bands); the stack and PRACH threads keep their elevated
+ * priority without a reservation. computation_us is a per-thread request:
+ * whenever the sum over all reserved threads would exceed budget_pct percent
+ * of one period, every reserved thread is rebalanced to an equal share of that
+ * budget, so the reservations are never overcommitted no matter how many PHY
+ * threads are configured.
  *
  * On other platforms the values are accepted and ignored.
  */
@@ -65,6 +69,7 @@ typedef struct {
   uint32_t period_us;
   uint32_t computation_us;
   uint32_t constraint_us;
+  uint32_t budget_pct;
 } srsran_rt_sched_args_t;
 
 /// Override the real-time scheduling deadline. Must be called before any

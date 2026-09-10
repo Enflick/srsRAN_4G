@@ -447,18 +447,21 @@ enable = false
 #                       InitialContextSetupRequest, at the cost of re-running the RRC
 #                       UECapabilityEnquiry on each attach. (Default: true)
 #
-# rt_sched_enable:      Request a real-time scheduling reservation for the PHY and radio
-#                       threads. macOS only - there, a real-time scheduling class alone
-#                       carries no guarantee and the Mach time-constraint policy is what
-#                       actually keeps thread wakeups inside the subframe deadline.
-#                       Ignored on other platforms. (Default: true)
+# rt_sched_enable:      Request a real-time scheduling reservation for the radio txrx
+#                       thread and the PHY workers. macOS only - there, a real-time
+#                       scheduling class alone carries no guarantee and the Mach
+#                       time-constraint policy is what actually keeps thread wakeups
+#                       inside the subframe deadline. Ignored on other platforms.
+#                       (Default: true)
 # rt_sched_period_us:   Reservation period in us. (Default: 1000, one LTE subframe)
-# rt_sched_computation_us: CPU time in us reserved per period for each real-time thread.
-#                       The sum over all real-time threads must stay below one period or
-#                       the scheduler refuses the reservation, so lower this if
-#                       nof_phy_threads is high. (Default: 250)
+# rt_sched_computation_us: CPU time in us requested per period for each real-time thread.
+#                       Reduced automatically so that the sum over all real-time threads
+#                       (1 + nof_phy_threads) stays within rt_sched_budget_pct of one
+#                       period. (Default: 250)
 # rt_sched_constraint_us: Deadline in us within which the reserved computation must be
 #                       scheduled. (Default: 1000)
+# rt_sched_budget_pct:  Share of one period, in percent, that all real-time threads
+#                       together may reserve. (Default: 80)
 #####################################################################
 [expert]
 #pusch_max_its        = 8 # These are half iterations
@@ -502,6 +505,7 @@ enable = false
 #rt_sched_period_us      = 1000
 #rt_sched_computation_us = 250
 #rt_sched_constraint_us  = 1000
+#rt_sched_budget_pct     = 80
 #sctp_path_mtu = 0
 #sctp_hb_disable = false
 #sctp_path_max_retrans = -1
