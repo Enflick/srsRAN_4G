@@ -26,11 +26,13 @@
 #include "srsran/common/threads.h"
 #include <atomic>
 #include <csignal>
+#include <chrono>
 #include <pthread.h>
 #include <sstream>
 #include <string.h>
 #include <string>
 #include <strings.h>
+#include <thread>
 #include <unistd.h>
 
 #define Error(fmt, ...)                                                                                                \
@@ -57,6 +59,9 @@ static void srsran_phy_handler(phy_logger_level_t log_level, void* ctx, char* st
   r->srsran_phy_logger(log_level, str);
 }
 
+// Seconds the orderly shutdown started by radio_failure() may take before the process is force-exited
+static const uint32_t RADIO_FAILURE_EXIT_DEADLINE_S = 5;
+
 void phy::radio_failure()
 {
   // A fatal RX error means the RF front-end stopped delivering samples. On the B2xx this is not recoverable
@@ -68,6 +73,16 @@ void phy::radio_failure()
   }
   phy_log.error("Radio failure reported by the RF driver. Shutting down for a supervised restart.");
   srsran::console("Radio failure: RX stream stalled or fatal RX error. Shutting down srsenb...\n");
+
+  // The orderly shutdown joins the txrx thread and the PHY workers. Either can be blocked inside the RF driver in this
+  // situation, so guarantee the supervisor sees an exit even if that join never returns.
+  std::thread([]() {
+    std::this_thread::sleep_for(std::chrono::seconds(RADIO_FAILURE_EXIT_DEADLINE_S));
+    srsran::console_stderr("Shutdown did not complete within %u s after radio failure, forcing exit\n",
+                           RADIO_FAILURE_EXIT_DEADLINE_S);
+    _exit(2);
+  }).detach();
+
   raise(SIGTERM);
 }
 
