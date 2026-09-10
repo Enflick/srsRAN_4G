@@ -192,6 +192,11 @@ struct rf_uhd_handler_t {
   std::atomic<uint32_t> consecutive_rx_timeouts{0};
   std::atomic<bool>     rx_fatal_reported{false};
 
+  // Set by the transmitter after an end-of-burst; the receiver thread drains the RX stream on its next call. The
+  // flush used to run on the calling (PHY worker) thread, which contended with the receiver for rx_mutex and stole
+  // its samples, see rf_uhd_flush_buffer_nolock.
+  std::atomic<bool> rx_flush_pending{false};
+
   std::mutex tx_mutex;
   std::mutex rx_mutex;
 
@@ -630,7 +635,8 @@ static inline int rf_uhd_stop_rx_stream_nolock(rf_uhd_handler_t* handler)
   handler->rx_stream_enabled = false;
 
   // Disarm the RX liveness watchdog: no samples are expected while the stream is stopped
-  handler->last_rx_ok_ms = 0;
+  handler->last_rx_ok_ms    = 0;
+  handler->rx_flush_pending = false;
 
   return SRSRAN_SUCCESS;
 }
@@ -651,31 +657,13 @@ int rf_uhd_stop_rx_stream(void* h)
   return SRSRAN_SUCCESS;
 }
 
-void rf_uhd_flush_buffer(void* h)
+/**
+ * Drains whatever the RX stream has buffered so the next reception starts from fresh samples. Caller holds rx_mutex.
+ */
+static void rf_uhd_flush_buffer_nolock(rf_uhd_handler_t* handler)
 {
-  rf_uhd_handler_t* handler = (rf_uhd_handler_t*)h;
-
-  // Diagnostic (no behavior change): rx_mutex is held by the receiver thread for the whole duration of
-  // rf_uhd_recv_with_time_multi, including a UHD recv that can block indefinitely if the RX transport stalls. When
-  // that happens, PHY worker threads calling this function wedge here silently. Log the wait once per second so the
-  // condition is visible in the preserved logs; the wait itself is still unbounded, as before.
-  std::unique_lock<std::mutex> lock(handler->rx_mutex, std::defer_lock);
-  const uint64_t               wait_start_ms  = rf_uhd_steady_ms();
-  uint64_t                     next_report_ms = wait_start_ms + 1000;
-  while (not lock.try_lock()) {
-    uint64_t now_ms = rf_uhd_steady_ms();
-    if (now_ms >= next_report_ms) {
-      Warning("rf_uhd_flush_buffer blocked on rx_mutex for " << (now_ms - wait_start_ms)
-                                                             << " ms (receiver stalled?)");
-      ERROR("rf_uhd_flush_buffer blocked on rx_mutex for %llu ms (receiver stalled?)",
-            (unsigned long long)(now_ms - wait_start_ms));
-      next_report_ms = now_ms + 1000;
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds(1));
-  }
-
   size_t rxd_samples               = 0;
-  void*                        data[SRSRAN_MAX_CHANNELS] = {};
+  void*  data[SRSRAN_MAX_CHANNELS] = {};
 
   // Set all pointers to zero buffer
   for (auto& i : data) {
@@ -691,6 +679,13 @@ void rf_uhd_flush_buffer(void* h)
       return;
     }
   } while (rxd_samples > 0 and md.error_code == uhd::rx_metadata_t::ERROR_CODE_NONE);
+}
+
+void rf_uhd_flush_buffer(void* h)
+{
+  rf_uhd_handler_t*            handler = (rf_uhd_handler_t*)h;
+  std::unique_lock<std::mutex> lock(handler->rx_mutex);
+  rf_uhd_flush_buffer_nolock(handler);
 }
 
 bool rf_uhd_has_rssi(void* h)
@@ -1417,6 +1412,11 @@ int rf_uhd_recv_with_time_multi(void*    h,
     }
   }
 
+  // Drain the stream if the transmitter ended a burst since the last call (see rx_flush_pending)
+  if (handler->rx_flush_pending.exchange(false)) {
+    rf_uhd_flush_buffer_nolock(handler);
+  }
+
   // Receive stream in multiple blocks
   while (rxd_samples_total < nsamples and trials < RF_UHD_IMP_MAX_RX_TRIALS) {
     void* buffs_ptr[SRSRAN_MAX_CHANNELS] = {};
@@ -1599,11 +1599,10 @@ int rf_uhd_send_timed_multi(void*  h,
         return SRSRAN_ERROR;
       }
 
-      // Flush receiver only if allowed
+      // Ask the receiver thread to flush its stream, if the device allows it. Flushing from here would take rx_mutex
+      // away from the receiver and consume the samples it is waiting for.
       if (RF_UHD_IMP_PROHIBITED_EOB_FLUSH.count(handler->devname) == 0) {
-        // Avoid holding the tx lock while in the rf_uhd_flush_buffer function to avoid potential deadlocks.
-        lock.unlock();
-        rf_uhd_flush_buffer(h);
+        handler->rx_flush_pending = true;
       }
 
       return SRSRAN_ERROR;
