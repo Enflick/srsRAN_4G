@@ -25,7 +25,9 @@
 #include <string.h>
 #include <unistd.h>
 
-#ifdef IS_ARM
+#if defined(IS_ARM) && defined(__APPLE__)
+// Every 64-bit Apple CPU has NEON; there is no auxiliary vector to query
+#elif defined(IS_ARM)
 #include <asm/hwcap.h>
 #include <stdio.h>
 #include <sys/auxv.h>
@@ -93,6 +95,9 @@ const char* x86_get_isa()
 #ifdef IS_ARM
 const char* arm_get_isa()
 {
+#if defined(__APPLE__)
+  return "neon";
+#else
 #ifdef HAVE_NEONv8
   if (getauxval(AT_HWCAP) & USER_HWCAP_NEON) {
 #else
@@ -102,6 +107,7 @@ const char* arm_get_isa()
   } else {
     return "generic";
   }
+#endif
 }
 #endif
 
