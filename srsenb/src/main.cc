@@ -744,9 +744,16 @@ int main(int argc, char* argv[])
       }
     }
   }
-  int cnt    = 0;
-  int ts_cnt = 0;
+  int cnt       = 0;
+  int ts_cnt    = 0;
+  int flush_cnt = 0;
   while (running) {
+    // Flush the log sinks once a second: the file sink is stdio-buffered, and a process that is killed or force-exited
+    // otherwise loses the last few KiB of log, which is precisely the part that explains what went wrong.
+    if (++flush_cnt == 100) {
+      flush_cnt = 0;
+      srslog::flush();
+    }
     if (args.general.print_buffer_state) {
       cnt++;
       if (cnt == 1000) {
