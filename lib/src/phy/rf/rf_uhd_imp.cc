@@ -340,11 +340,12 @@ static void* async_thread(void* h)
             // stale value observed by the reader can be correlated against the values actually written here.
             uint64_t now_ms = rf_uhd_steady_ms();
             if (now_ms >= underflow_log_next_ms) {
-              Info("Underflow at " << md.time_spec.get_real_secs() << ", eob_ack_timeout set to "
-                                   << handler->eob_ack_timeout.get_real_secs() << " (+" << underflow_suppressed
-                                   << " suppressed)");
-              underflow_suppressed   = 0;
-              underflow_log_next_ms  = now_ms + 1000;
+              INFO("Underflow at %.6f, eob_ack_timeout set to %.6f (+%u suppressed)",
+                   md.time_spec.get_real_secs(),
+                   handler->eob_ack_timeout.get_real_secs(),
+                   underflow_suppressed);
+              underflow_suppressed  = 0;
+              underflow_log_next_ms = now_ms + 1000;
             } else {
               underflow_suppressed++;
             }
@@ -357,9 +358,10 @@ static void* async_thread(void* h)
             // See the underflow branch: unsynchronized write, logged for read/write correlation (rate limited).
             uint64_t now_ms = rf_uhd_steady_ms();
             if (now_ms >= late_log_next_ms) {
-              Info("Late at " << md.time_spec.get_real_secs() << ", eob_ack_timeout set to "
-                              << handler->eob_ack_timeout.get_real_secs() << " (+" << late_suppressed
-                              << " suppressed)");
+              INFO("Late at %.6f, eob_ack_timeout set to %.6f (+%u suppressed)",
+                   md.time_spec.get_real_secs(),
+                   handler->eob_ack_timeout.get_real_secs(),
+                   late_suppressed);
               late_suppressed  = 0;
               late_log_next_ms = now_ms + 1000;
             } else {
@@ -383,15 +385,12 @@ static void* async_thread(void* h)
       // RX liveness watchdog: while the RX stream is armed (last_rx_ok_ms != 0), a receiver that has not delivered a
       // single sample for RF_UHD_IMP_RX_STALL_TIMEOUT_MS is considered stalled. This thread is the only one
       // guaranteed to stay responsive in that situation: the receiver thread can be blocked indefinitely inside the
-      // USB transport (holding rx_mutex, which also wedges any thread entering rf_uhd_flush_buffer), so the fatal RX
-      // error must be raised from here.
+      // USB transport while holding rx_mutex, so the fatal RX error must be raised from here.
       uint64_t last_rx_ms = handler->last_rx_ok_ms;
       if (last_rx_ms != 0 and not handler->rx_fatal_reported) {
         uint64_t now_ms = rf_uhd_steady_ms();
         if (now_ms - last_rx_ms > RF_UHD_IMP_RX_STALL_TIMEOUT_MS) {
           handler->rx_fatal_reported = true;
-          Error("RX stream stalled: no samples received for " << (now_ms - last_rx_ms)
-                                                              << " ms. Raising fatal RX error.");
           ERROR("RX stream stalled: no samples received for %llu ms. Raising fatal RX error.",
                 (unsigned long long)(now_ms - last_rx_ms));
           log_rx_error(handler);
@@ -1092,8 +1091,9 @@ static inline int rf_uhd_imp_end_burst(rf_uhd_handler_t* handler)
     static uint32_t eob_suppressed  = 0;
     uint64_t        now_ms          = rf_uhd_steady_ms();
     if (now_ms >= eob_log_next_ms) {
-      Info("EOB sent, waiting for EOB ACK (eob_ack_timeout=" << handler->eob_ack_timeout.get_real_secs() << ", +"
-                                                             << eob_suppressed << " suppressed)");
+      INFO("EOB sent, waiting for EOB ACK (eob_ack_timeout=%.6f, +%u suppressed)",
+           handler->eob_ack_timeout.get_real_secs(),
+           eob_suppressed);
       eob_suppressed  = 0;
       eob_log_next_ms = now_ms + 1000;
     } else {
@@ -1470,7 +1470,7 @@ int rf_uhd_recv_with_time_multi(void*    h,
                  not handler->rx_fatal_reported.exchange(true)) {
         // This device class never restarts the stream after a timeout, so repeated timeouts cannot self-heal.
         // Raise a fatal RX error so the stack can act (previously this returned -1 into callers that ignore it).
-        Error("RX timed out " << nof_timeouts << " consecutive times. Raising fatal RX error.");
+        ERROR("RX timed out %u consecutive times. Raising fatal RX error.", nof_timeouts);
         log_rx_error(handler);
       }
 
@@ -1611,9 +1611,9 @@ int rf_uhd_send_timed_multi(void*  h,
     // If the state is waiting for EOB ACK and the metadata of the current packet has passed the timeout, then start the
     // burst
     if (handler->tx_state == RF_UHD_IMP_TX_STATE_WAIT_EOB_ACK and md.time_spec >= handler->eob_ack_timeout) {
-      Info("Tx while waiting for EOB, timed out... " << md.time_spec.get_real_secs()
-                                                     << " >= " << handler->eob_ack_timeout.get_real_secs()
-                                                     << ". Starting new burst...");
+      INFO("Tx while waiting for EOB, timed out... %.6f >= %.6f. Starting new burst...",
+           md.time_spec.get_real_secs(),
+           handler->eob_ack_timeout.get_real_secs());
       handler->tx_state = RF_UHD_IMP_TX_STATE_START_BURST;
     }
 
@@ -1657,8 +1657,9 @@ int rf_uhd_send_timed_multi(void*  h,
         handler->tx_state = RF_UHD_IMP_TX_STATE_BURST;
       }
     } else {
-      Debug("Tx while waiting for EOB, aborting block... " << md.time_spec.get_real_secs() << " < "
-                                                           << handler->eob_ack_timeout.get_real_secs());
+      DEBUG("Tx while waiting for EOB, aborting block... %.6f < %.6f",
+            md.time_spec.get_real_secs(),
+            handler->eob_ack_timeout.get_real_secs());
     }
 
     // Increase the metadata transmit time
