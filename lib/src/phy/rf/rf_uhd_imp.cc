@@ -116,6 +116,13 @@ static const double RF_UHD_IMP_TIMED_COMMAND_DELAY_S = 0.1;
 static const double RF_UHD_IMP_TRX_TIMEOUT_S = 0.5;
 
 /**
+ * Receive timeout in seconds for a single recv call. It must exceed RF_UHD_IMP_STREAM_DELAY_S, the lead of a timed
+ * stream start, since the first recv after (re)starting the stream waits for that lead. Kept short otherwise so that
+ * a dead stream is detected within a few hundred milliseconds rather than seconds.
+ */
+static const double RF_UHD_IMP_RX_TIMEOUT_S = 0.3;
+
+/**
  * Receive asynchronous message receiver timeout
  */
 static const double RF_UHD_IMP_ASYNCH_MSG_TIMEOUT_S = 0.0;
@@ -136,7 +143,7 @@ static const uint32_t RF_UHD_IMP_MAX_RX_TRIALS = 100;
  * RX error (SRSRAN_RF_ERROR_RX). This covers the case where UHD's recv blocks indefinitely inside the USB transport
  * and never returns control to the caller, so no error code can be acted upon.
  */
-static const uint64_t RF_UHD_IMP_RX_STALL_TIMEOUT_MS = 5000;
+static const uint64_t RF_UHD_IMP_RX_STALL_TIMEOUT_MS = 2000;
 
 /**
  * Number of consecutive receive timeouts after which a fatal RX error (SRSRAN_RF_ERROR_RX) is raised. On devices in
@@ -152,9 +159,12 @@ static inline uint64_t rf_uhd_steady_ms()
 }
 
 /**
- * Timeout for end of burst ack.
+ * Timeout for end of burst ack. While waiting for the ACK nothing is transmitted, not even PSS/SSS/PBCH, so this bounds
+ * the downlink blackout after a Late or Underflow when the ACK is lost. The ACK normally arrives within a few ms; a UE
+ * exhausts its scheduling requests after about 1.3 s and declares radio link failure after T310 (2 s), so the former
+ * 2 s value guaranteed losing every UE whenever an ACK went missing.
  */
-static const double RF_UHD_IMP_WAIT_EOB_ACK_TIMEOUT_S = 2.0;
+static const double RF_UHD_IMP_WAIT_EOB_ACK_TIMEOUT_S = 0.1;
 
 struct rf_uhd_handler_t {
   size_t id;
@@ -1434,7 +1444,8 @@ int rf_uhd_recv_with_time_multi(void*    h,
       }
     }
 
-    if (handler->uhd->receive(buffs_ptr, num_rx_samples, md, 1.0, false, rxd_samples) != UHD_ERROR_NONE) {
+    if (handler->uhd->receive(buffs_ptr, num_rx_samples, md, RF_UHD_IMP_RX_TIMEOUT_S, false, rxd_samples) !=
+        UHD_ERROR_NONE) {
       log_rx_error(handler);
       return SRSRAN_ERROR;
     }
