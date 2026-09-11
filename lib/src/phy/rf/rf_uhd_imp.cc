@@ -196,6 +196,11 @@ struct rf_uhd_handler_t {
 
   bool rx_stream_enabled = false;
 
+  // Device argument "rx_stream_restart" (default true). On devices in RF_UHD_IMP_PROHIBITED_STOP_START a dead RX
+  // stream is restarted in-process (stop, then a timed start with RF_UHD_IMP_STREAM_DELAY_S lead) instead of only
+  // being reported as fatal. See rf_uhd_recv_with_time_multi.
+  bool rx_stream_restart = true;
+
   // RX liveness tracking (see RF_UHD_IMP_RX_STALL_TIMEOUT_MS and RF_UHD_IMP_MAX_CONSECUTIVE_RX_TIMEOUTS).
   // last_rx_ok_ms is armed when the stream starts, stamped on every successful reception and 0 while stopped.
   std::atomic<uint64_t> last_rx_ok_ms{0};
@@ -777,6 +782,12 @@ static int uhd_init(rf_uhd_handler_t* handler, char* args, uint32_t nof_channels
     start_async_thread = false;
   }
 #endif
+
+  // In-process RX stream restart on devices that upstream excluded from stop/start (B2xx), see rx_stream_restart
+  if (device_addr.has_key("rx_stream_restart")) {
+    handler->rx_stream_restart = device_addr.cast("rx_stream_restart", true);
+    device_addr.pop("rx_stream_restart");
+  }
 
   // If device type or name not given in args, select device from found list
   if (not device_addr.has_key("type")) {
@@ -1470,17 +1481,35 @@ int rf_uhd_recv_with_time_multi(void*    h,
       log_overflow(handler);
     } else if (error_code == uhd::rx_metadata_t::ERROR_CODE_LATE_COMMAND) {
       log_late(handler, true);
+
+      // The only timed command on the RX side is a stream start: ours, or the one UHD's own two-channel overflow
+      // recovery issues with a 10 ms lead. A late start is dropped by the device and the stream stays stopped, so
+      // on devices that would otherwise never restart it, restart it now rather than after the receive timeout.
+      if (RF_UHD_IMP_PROHIBITED_STOP_START.count(handler->devname) != 0 and handler->rx_stream_restart and
+          handler->rx_stream_enabled) {
+        ERROR("RX stream start was late and dropped. Restarting RX stream.");
+        rf_uhd_stop_rx_stream_nolock(handler);
+        return -1;
+      }
     } else if (error_code == uhd::rx_metadata_t::ERROR_CODE_TIMEOUT) {
       uint32_t nof_timeouts = ++handler->consecutive_rx_timeouts;
       ERROR("Error timed out while receiving samples from UHD (%u consecutive).", nof_timeouts);
 
       if (RF_UHD_IMP_PROHIBITED_STOP_START.count(handler->devname) == 0) {
-        // Stop Rx stream
+        // Stop Rx stream; the next call starts it again
+        rf_uhd_stop_rx_stream_nolock(handler);
+      } else if (handler->rx_stream_restart and nof_timeouts < RF_UHD_IMP_MAX_CONSECUTIVE_RX_TIMEOUTS) {
+        // Upstream excluded this device class from stop/start because a B210 in MIMO mode was left with a stopped
+        // stream after a rate change (commit 3f02e56a1). That is the symptom of a late timed start, which the
+        // RF_UHD_IMP_STREAM_DELAY_S lead used by rf_uhd_start_rx_stream_nolock avoids, so try a restart before giving
+        // up. Bounded: the counter only resets when samples arrive, so a restart that yields nothing escalates below.
+        ERROR("RX stream delivered nothing for %u consecutive timeouts. Restarting RX stream (rx_stream_restart).",
+              nof_timeouts);
         rf_uhd_stop_rx_stream_nolock(handler);
       } else if (nof_timeouts >= RF_UHD_IMP_MAX_CONSECUTIVE_RX_TIMEOUTS and
                  not handler->rx_fatal_reported.exchange(true)) {
-        // This device class never restarts the stream after a timeout, so repeated timeouts cannot self-heal.
-        // Raise a fatal RX error so the stack can act (previously this returned -1 into callers that ignore it).
+        // Either restarts are disabled or they did not bring the stream back. Raise a fatal RX error so the stack can
+        // act (previously this returned -1 into callers that ignore it).
         ERROR("RX timed out %u consecutive times. Raising fatal RX error.", nof_timeouts);
         log_rx_error(handler);
       }
