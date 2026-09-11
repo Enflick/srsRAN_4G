@@ -196,10 +196,10 @@ struct rf_uhd_handler_t {
 
   bool rx_stream_enabled = false;
 
-  // Device argument "rx_stream_restart" (default true). On devices in RF_UHD_IMP_PROHIBITED_STOP_START a dead RX
-  // stream is restarted in-process (stop, then a timed start with RF_UHD_IMP_STREAM_DELAY_S lead) instead of only
-  // being reported as fatal. See rf_uhd_recv_with_time_multi.
-  bool rx_stream_restart = true;
+  // Device argument "rx_stream_restart" (default false). When true, on devices in RF_UHD_IMP_PROHIBITED_STOP_START a
+  // dead RX stream is restarted in-process (stop, then a timed start with RF_UHD_IMP_STREAM_DELAY_S lead) instead of
+  // only being reported as fatal. See rf_uhd_recv_with_time_multi.
+  bool rx_stream_restart = false;
 
   // RX liveness tracking (see RF_UHD_IMP_RX_STALL_TIMEOUT_MS and RF_UHD_IMP_MAX_CONSECUTIVE_RX_TIMEOUTS).
   // last_rx_ok_ms is armed when the stream starts, stamped on every successful reception and 0 while stopped.
@@ -785,7 +785,7 @@ static int uhd_init(rf_uhd_handler_t* handler, char* args, uint32_t nof_channels
 
   // In-process RX stream restart on devices that upstream excluded from stop/start (B2xx), see rx_stream_restart
   if (device_addr.has_key("rx_stream_restart")) {
-    handler->rx_stream_restart = device_addr.cast("rx_stream_restart", true);
+    handler->rx_stream_restart = device_addr.cast("rx_stream_restart", false);
     device_addr.pop("rx_stream_restart");
   }
 

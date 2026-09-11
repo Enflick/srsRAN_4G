@@ -57,10 +57,11 @@ rb_config = rb.conf
 #                     Supported options: "auto" (uses first driver found), "UHD", "bladeRF", "soapy" or "zmq"
 # device_args:        Arguments for the device driver. Options are "auto" or any string.
 #                     Default for UHD: "recv_frame_size=9232,send_frame_size=9232"
-#                     UHD B2xx: "rx_stream_restart=false" disables the in-process restart of a
-#                     dead RX stream (default true: after a late stream start or a receive
-#                     timeout the stream is stopped and started again with a 100 ms lead;
-#                     only when two restarts yield no samples is the radio failure raised).
+#                     UHD B2xx: "rx_stream_restart=true" enables the in-process restart of a
+#                     dead RX stream: after a late stream start or a receive timeout the
+#                     stream is stopped and started again with a 100 ms lead, and only when
+#                     two restarts yield no samples is the radio failure raised. Default
+#                     false: a dead stream raises the radio failure directly.
 #                     Default for bladeRF: ""
 # time_adv_nsamples:  Transmission time advance (in number of samples) to compensate for RF delay
 #                     from antenna to timestamp insertion.
