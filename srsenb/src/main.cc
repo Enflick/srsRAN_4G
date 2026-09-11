@@ -24,6 +24,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/mman.h>
+#include <sys/resource.h>
 #include <unistd.h>
 
 #include "srsran/common/common_helper.h"
@@ -703,6 +704,22 @@ int main(int argc, char* argv[])
 
   if (mlockall((uint32_t)MCL_CURRENT | (uint32_t)MCL_FUTURE) == -1) {
     srsran::console("Failed to `mlockall`: {}", errno);
+  }
+
+  // Raise the process priority. The real-time PHY threads are unaffected, but the stack thread, the log backend and
+  // the RF driver's own transport threads run as ordinary timeshare threads and compete with everything else on the
+  // machine; a negative nice value keeps them ahead. Needs root, which the RF device needs anyway, so a failure is
+  // reported rather than fatal.
+  {
+    const int             wanted  = -20;
+    const int             before  = getpriority(PRIO_PROCESS, 0);
+    srslog::basic_logger& enb_log = srslog::fetch_basic_logger("ENB");
+    if (setpriority(PRIO_PROCESS, 0, wanted) != 0) {
+      enb_log.warning("Could not set process nice value to %d (current %d): %s", wanted, before, strerror(errno));
+      srsran::console("Warning: could not set process nice value to %d: %s\n", wanted, strerror(errno));
+    } else {
+      enb_log.info("Process nice value set to %d (was %d)", getpriority(PRIO_PROCESS, 0), before);
+    }
   }
 
   // Create eNB
