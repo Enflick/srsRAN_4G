@@ -26,6 +26,9 @@
 #include "srsran/common/threads.h"
 #include "srsran/srslog/srslog.h"
 #include <atomic>
+#include <cstdio>
+#include <cstdlib>
+#include <ctime>
 #include <pthread.h>
 #include <sstream>
 #include <string.h>
@@ -73,6 +76,31 @@ void phy::radio_failure()
   }
   phy_log.error("Radio failure reported by the RF driver. Exiting for a supervised restart.");
   srsran::console("Radio failure: RX stream stalled or fatal RX error. Exiting srsenb for a supervised restart...\n");
+
+#ifdef __APPLE__
+  // Capture every thread's stack before exiting. The receiver thread is normally blocked somewhere inside the RF
+  // driver at this point, and this is the only record of where; the supervisor's snapshot cannot catch it because
+  // the process exits on its own. Costs about two seconds of downtime. The file name matches the supervisor's
+  // snapshot naming (local time) so the two correlate.
+  {
+    char        path[128];
+    std::time_t now = std::time(nullptr);
+    std::tm     tm  = {};
+    localtime_r(&now, &tm);
+    std::strftime(path, sizeof(path), "/tmp/enb-radio-failure-%Y%m%d-%H%M%S.txt", &tm);
+
+    char cmd[256];
+    snprintf(cmd, sizeof(cmd), "/usr/bin/sample %d 1 -mayDie -file %s >/dev/null 2>&1", (int)getpid(), path);
+    srsran::console("Capturing thread stacks to %s ...\n", path);
+    int rc = system(cmd);
+    if (rc == 0) {
+      phy_log.error("Thread stacks at radio failure written to %s", path);
+    } else {
+      phy_log.error("Thread stack capture failed (sample exit status %d)", rc);
+    }
+  }
+#endif
+
   srslog::flush();
   _exit(RADIO_FAILURE_EXIT_STATUS);
 }
